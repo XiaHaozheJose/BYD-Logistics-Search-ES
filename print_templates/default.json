@@ -1,0 +1,4 @@
+{
+  "name": "默认模板",
+  "body": "<h3>订单查询结果</h3>\n<table class='table-auto border-collapse border border-gray-400 w-full'>\n  <tbody>\n    {{#each}}\n  </tbody>\n</table>"
+}

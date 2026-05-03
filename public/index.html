@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BYD Logistics Search</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.7.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.7.1/firebase-firestore-compat.js"></script>
+  <script>
+    firebase.initializeApp({
+      apiKey: "AIzaSyD-fmiozwMEn0WbBFsO0dfAhCI0OcZxU8o",
+      authDomain: "project-d5a525d1-72ba-431c-80c.firebaseapp.com",
+      projectId: "project-d5a525d1-72ba-431c-80c",
+      storageBucket: "project-d5a525d1-72ba-431c-80c.firebasestorage.app",
+      messagingSenderId: "421692524791",
+      appId: "1:421692524791:web:b5ac4579f7b62dd3ff2bf2"
+    });
+    const fbAuth = firebase.auth();
+    const fbDb = firebase.firestore();
+  </script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    @media print {
+      .no-print { display: none !important; }
+      .print-area { border: none !important; box-shadow: none !important; padding: 0 !important; }
+      #printOnlyArea { display: block !important; }
+    }
+    .loader { border: 3px solid #e5e7eb; border-top-color: #3b82f6; border-radius: 50%; width: 20px; height: 20px; animation: spin .6s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .print-card { border: 1px solid #d1d5db; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+    .print-card h3 { font-size: 15px; font-weight: 700; margin-bottom: 10px; color: #1e40af; border-bottom: 2px solid #3b82f6; padding-bottom: 6px; }
+    .print-card .field-row { display: flex; padding: 4px 0; border-bottom: 1px solid #f3f4f6; font-size: 13px; }
+    .print-card .field-label { font-weight: 600; color: #374151; min-width: 180px; flex-shrink: 0; }
+    .print-card .field-value { color: #111827; }
+    .login-bg { background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 50%, #0ea5e9 100%); min-height: 100vh; }
+    .dropzone { border: 2px dashed #93c5fd; transition: all .2s; }
+    .dropzone.drag-over { border-color: #2563eb; background: #eff6ff; transform: scale(1.01); }
+    .progress-bar { transition: width .3s ease; }
+    .pulse-dot { animation: pulseDot 1.5s ease-in-out infinite; }
+    @keyframes pulseDot { 0%,100% { opacity: .4; } 50% { opacity: 1; } }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-800 min-h-screen" x-data="app()" x-init="init()" x-cloak>
+
+  <!-- LOGIN SCREEN -->
+  <template x-if="!user && authReady">
+    <div class="login-bg flex items-center justify-center">
+      <div class="bg-white/95 backdrop-blur-sm rounded-2xl shadow-2xl p-10 max-w-md w-full mx-4 text-center">
+        <div class="mb-6">
+          <div class="w-20 h-20 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
+            <svg class="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+          </div>
+          <h1 class="text-2xl font-bold text-gray-800 mb-1">BYD Logistics</h1>
+          <p class="text-gray-500 text-sm" x-text="t('loginSubtitle')"></p>
+        </div>
+        <button @click="googleLogin()"
+                class="w-full flex items-center justify-center gap-3 bg-white border-2 border-gray-200 hover:border-blue-400 hover:shadow-md text-gray-700 font-medium py-3 px-6 rounded-xl transition-all duration-200">
+          <svg class="w-5 h-5" viewBox="0 0 24 24">
+            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/>
+            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+          </svg>
+          <span x-text="t('loginWithGoogle')"></span>
+        </button>
+        <p class="text-xs text-gray-400 mt-6" x-text="t('loginFooter')"></p>
+        <div class="flex justify-center gap-2 mt-4">
+          <button class="px-2 py-1 text-xs rounded transition" :class="lang==='zh'?'bg-blue-100 text-blue-700 font-semibold':'text-gray-400 hover:text-gray-600'" @click="setLang('zh')">中文</button>
+          <button class="px-2 py-1 text-xs rounded transition" :class="lang==='en'?'bg-blue-100 text-blue-700 font-semibold':'text-gray-400 hover:text-gray-600'" @click="setLang('en')">EN</button>
+          <button class="px-2 py-1 text-xs rounded transition" :class="lang==='es'?'bg-blue-100 text-blue-700 font-semibold':'text-gray-400 hover:text-gray-600'" @click="setLang('es')">ES</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <template x-if="!authReady">
+    <div class="flex items-center justify-center min-h-screen"><div class="loader" style="width:40px;height:40px;border-width:4px;"></div></div>
+  </template>
+
+  <!-- MAIN APP -->
+  <template x-if="user && authReady">
+    <div>
+      <header class="bg-white border-b shadow-sm no-print">
+        <div class="max-w-[1600px] mx-auto px-4 py-3 flex items-center justify-between">
+          <h1 class="text-xl font-bold text-blue-700 tracking-wide" x-text="t('title')"></h1>
+          <div class="flex items-center gap-3">
+            <div class="flex border rounded-md overflow-hidden text-xs">
+              <button class="px-2 py-1 transition" :class="lang==='zh'?'bg-blue-600 text-white':'hover:bg-gray-100'" @click="setLang('zh')">中文</button>
+              <button class="px-2 py-1 transition" :class="lang==='en'?'bg-blue-600 text-white':'hover:bg-gray-100'" @click="setLang('en')">EN</button>
+              <button class="px-2 py-1 transition" :class="lang==='es'?'bg-blue-600 text-white':'hover:bg-gray-100'" @click="setLang('es')">ES</button>
+            </div>
+            <div class="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-1.5">
+              <img :src="user.photoURL||''" class="w-7 h-7 rounded-full ring-2 ring-blue-200" referrerpolicy="no-referrer" x-show="user.photoURL">
+              <div class="text-xs">
+                <div class="font-medium text-gray-700 max-w-[140px] truncate" x-text="user.displayName||user.email"></div>
+                <div class="text-gray-400 max-w-[140px] truncate" x-text="user.email" x-show="user.displayName"></div>
+              </div>
+              <button class="ml-1 text-gray-400 hover:text-red-500 transition" @click="logout()" :title="t('logout')">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main class="max-w-[1600px] mx-auto px-4 py-4 flex gap-4 no-print" style="min-height:calc(100vh - 60px)">
+
+        <!-- Left Sidebar -->
+        <aside class="w-72 flex-shrink-0 space-y-4">
+          <section class="bg-white rounded-lg shadow p-4">
+            <h2 class="font-semibold text-sm text-gray-500 mb-2" x-text="'1. ' + t('selectModel')"></h2>
+            <template x-for="m in models" :key="m.id">
+              <button class="w-full text-left px-3 py-2 rounded-md text-sm mb-1 transition"
+                :class="selectedModel===m.id?'bg-blue-600 text-white':'hover:bg-gray-100'"
+                @click="selectModel(m.id)">
+                <span x-text="m.name"></span>
+                <span class="text-xs opacity-60" x-text="m.loaded?'':'('+t('noData')+')'"></span>
+              </button>
+            </template>
+          </section>
+
+          <section class="bg-white rounded-lg shadow p-4" x-show="selectedModel">
+            <h2 class="font-semibold text-sm text-gray-500 mb-2" x-text="t('dataManagement')"></h2>
+
+            <!-- Current file info -->
+            <div class="mb-3 p-2 bg-gray-50 rounded text-xs" x-show="modelFileInfo && modelFileInfo.exists">
+              <div class="flex items-center justify-between">
+                <div>
+                  <span class="text-gray-500" x-text="t('currentFile')+':'"></span>
+                  <span class="font-medium" x-text="modelFileInfo?.size_mb+' MB'"></span>
+                </div>
+                <span class="text-gray-400" x-text="modelFileInfo?.updated ? new Date(modelFileInfo.updated).toLocaleDateString() : ''"></span>
+              </div>
+            </div>
+
+            <label class="block text-xs text-gray-500 mb-1" x-text="t('uploadNewExcel')"></label>
+            <input type="file" accept=".xlsx,.xls" class="block w-full text-xs mb-2" id="sidebarFileInput"
+                   @change="uploadFile=$event.target.files[0]">
+            <div class="flex gap-2 mb-2">
+              <button class="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-xs py-2 rounded-md flex items-center justify-center gap-1"
+                      @click="uploadExcel('replace')" :disabled="!uploadFile||uploading">
+                <span class="loader" x-show="uploading" style="width:14px;height:14px;border-width:2px;"></span>
+                <span x-text="t('replace')"></span>
+              </button>
+              <button class="flex-1 bg-amber-500 hover:bg-amber-600 text-white text-xs py-2 rounded-md"
+                      @click="uploadExcel('append')" :disabled="!uploadFile||uploading" x-text="t('append')"></button>
+            </div>
+
+            <!-- Delete model data -->
+            <button class="w-full text-xs py-1.5 rounded-md border border-red-200 text-red-500 hover:bg-red-50 hover:border-red-400 transition flex items-center justify-center gap-1"
+                    @click="deleteModelData()" :disabled="deleting"
+                    x-show="modelFileInfo && modelFileInfo.exists">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+              <span x-text="deleting ? '...' : t('deleteModelData')"></span>
+            </button>
+          </section>
+
+          <section class="bg-white rounded-lg shadow p-4" x-show="sheets.length>0">
+            <h2 class="font-semibold text-sm text-gray-500 mb-2" x-text="'2. '+t('selectSheet')"></h2>
+            <template x-for="s in sheets" :key="s.table_name">
+              <button class="w-full text-left px-3 py-1.5 rounded-md text-sm mb-1 transition flex justify-between items-center"
+                :class="selectedSheet?.table_name===s.table_name?'bg-blue-600 text-white':'hover:bg-gray-100'"
+                @click="selectSheet(s)">
+                <span x-text="s.sheet_name"></span>
+                <span class="text-xs opacity-70" x-text="s.row_count+' '+t('rows')"></span>
+              </button>
+            </template>
+          </section>
+
+          <section class="bg-white rounded-lg shadow p-4" x-show="selectedSheet">
+            <div class="flex items-center justify-between mb-2">
+              <h2 class="font-semibold text-sm text-gray-500" x-text="'4. '+t('displayColumns')"></h2>
+              <div class="flex gap-1">
+                <button class="text-xs text-blue-600 hover:underline" @click="visibleCols=[...selectedSheet.columns];saveColPrefs()" x-text="t('selectAll')"></button>
+                <button class="text-xs text-blue-600 hover:underline" @click="visibleCols=[];saveColPrefs()" x-text="t('clearAll')"></button>
+              </div>
+            </div>
+            <input type="text" x-model="colFilter" :placeholder="t('filterColumns')"
+                   class="w-full border border-gray-200 rounded px-2 py-1 text-xs mb-2 focus:ring-1 focus:ring-blue-400 outline-none">
+            <div class="max-h-48 overflow-y-auto">
+              <template x-for="col in filteredColumns()" :key="col">
+                <label class="flex items-center gap-1.5 text-xs py-0.5 cursor-pointer">
+                  <input type="checkbox" :value="col" x-model="visibleCols" class="rounded text-blue-600" @change="saveColPrefs()">
+                  <span x-text="col" class="truncate"></span>
+                </label>
+              </template>
+              <p class="text-xs text-gray-400 py-1" x-show="colFilter && filteredColumns().length===0" x-text="t('noResults')"></p>
+            </div>
+            <div class="text-[10px] text-gray-400 mt-1" x-show="selectedSheet" x-text="visibleCols.length+'/'+selectedSheet.columns.length+' '+t('selected')"></div>
+            <div class="mt-2 pt-2 border-t flex gap-1">
+              <button class="text-xs bg-blue-500 hover:bg-blue-600 text-white px-2 py-1 rounded" @click="saveColPrefs(true)" x-text="t('saveCols')"></button>
+              <span class="text-xs text-green-600" x-show="colsSaved" x-text="'✓ '+t('saved')"></span>
+            </div>
+          </section>
+
+          <section class="bg-white rounded-lg shadow p-4" x-show="uploadHistory.length>0">
+            <div class="flex items-center justify-between mb-2">
+              <h2 class="font-semibold text-sm text-gray-500" x-text="t('uploadHistory')"></h2>
+              <button class="text-xs text-red-400 hover:text-red-600" @click="clearAllHistory()" x-text="t('clearAll')"></button>
+            </div>
+            <div class="space-y-1 max-h-40 overflow-y-auto">
+              <template x-for="h in uploadHistory" :key="h.id">
+                <div class="text-xs p-1.5 bg-gray-50 rounded flex justify-between items-center group">
+                  <div class="min-w-0 flex-1">
+                    <span class="font-medium truncate block" x-text="h.fileName"></span>
+                    <span class="text-gray-400" x-text="h.model + ' · ' + (h.mode==='append'?t('append'):t('replace')) + ' · ' + h.date"></span>
+                  </div>
+                  <button class="text-gray-300 hover:text-red-500 ml-2 opacity-0 group-hover:opacity-100 transition flex-shrink-0"
+                          @click.stop="deleteHistoryItem(h.id)">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                  </button>
+                </div>
+              </template>
+            </div>
+          </section>
+        </aside>
+
+        <!-- Main Content -->
+        <div class="flex-1 flex flex-col gap-4 min-w-0">
+
+          <!-- Drag & Drop Upload Zone -->
+          <section class="dropzone rounded-xl p-10 text-center cursor-pointer bg-blue-50/50"
+                   x-show="selectedModel && !sheets.length && !jobStatus"
+                   @click="$refs.dropInput.click()"
+                   @dragover.prevent="$el.classList.add('drag-over')"
+                   @dragleave.prevent="$el.classList.remove('drag-over')"
+                   @drop.prevent="handleDrop($event);$el.classList.remove('drag-over')">
+            <input type="file" accept=".xlsx,.xls" class="hidden" x-ref="dropInput"
+                   @change="uploadFile=$event.target.files[0];uploadExcel('replace')">
+            <svg class="w-16 h-16 text-blue-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+            </svg>
+            <h3 class="text-blue-700 font-semibold text-lg mb-1" x-text="t('uploadPromptTitle')"></h3>
+            <p class="text-sm text-blue-500 mb-3" x-text="t('uploadPromptDesc')"></p>
+            <p class="text-xs text-gray-400" x-text="t('dragDropHint')"></p>
+          </section>
+
+          <!-- REAL-TIME Processing Progress -->
+          <section class="bg-white rounded-xl shadow-lg p-6 border border-blue-100" x-show="jobStatus && jobStatus!=='done'">
+            <div class="flex items-start gap-4">
+              <div class="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                <div class="loader" style="border-top-color:#2563eb;"></div>
+              </div>
+              <div class="flex-1 min-w-0">
+                <h3 class="font-semibold text-gray-800 mb-1" x-text="t('processingTitle')"></h3>
+                <p class="text-sm text-gray-500 mb-3" x-text="jobFileName"></p>
+
+                <!-- Phase indicator -->
+                <div class="flex items-center gap-6 mb-4 text-xs">
+                  <div class="flex items-center gap-1.5" :class="uploadPhase==='upload'?'text-blue-600 font-semibold':'text-green-600'">
+                    <template x-if="uploadPhase==='upload'"><span class="pulse-dot">●</span></template>
+                    <template x-if="uploadPhase!=='upload'"><span>✓</span></template>
+                    <span x-text="t('phaseUpload')"></span>
+                  </div>
+                  <div class="h-px flex-1 bg-gray-200"></div>
+                  <div class="flex items-center gap-1.5" :class="uploadPhase==='process'?'text-blue-600 font-semibold':uploadPhase==='done'?'text-green-600':'text-gray-400'">
+                    <template x-if="uploadPhase==='process'"><span class="pulse-dot">●</span></template>
+                    <template x-if="uploadPhase==='done'"><span>✓</span></template>
+                    <template x-if="uploadPhase!=='process'&&uploadPhase!=='done'"><span>○</span></template>
+                    <span x-text="t('phaseProcess')"></span>
+                  </div>
+                  <div class="h-px flex-1 bg-gray-200"></div>
+                  <div class="flex items-center gap-1.5" :class="uploadPhase==='done'?'text-green-600':'text-gray-400'">
+                    <template x-if="uploadPhase==='done'"><span>✓</span></template>
+                    <template x-if="uploadPhase!=='done'"><span>○</span></template>
+                    <span x-text="t('phaseReady')"></span>
+                  </div>
+                </div>
+
+                <!-- Progress bar -->
+                <div class="w-full bg-gray-100 rounded-full h-3 mb-2 overflow-hidden">
+                  <div class="bg-gradient-to-r from-blue-500 to-blue-600 h-3 rounded-full progress-bar" :style="'width:'+jobPercent+'%'"></div>
+                </div>
+
+                <!-- Status text -->
+                <div class="flex justify-between text-xs text-gray-500">
+                  <span x-text="jobProgressText"></span>
+                  <span x-text="jobPercent+'%'"></span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Error state -->
+          <section class="bg-red-50 border border-red-200 rounded-lg p-4" x-show="jobStatus==='error'">
+            <div class="flex items-center gap-2 text-red-700 font-medium text-sm mb-1">
+              <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/></svg>
+              <span x-text="t('uploadError')"></span>
+            </div>
+            <p class="text-xs text-red-600" x-text="jobError"></p>
+            <button class="mt-2 text-xs bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700" @click="jobStatus=null;jobError=''" x-text="t('dismiss')"></button>
+          </section>
+
+          <section class="bg-white rounded-lg shadow p-4" x-show="selectedSheet">
+            <h2 class="font-semibold text-sm text-gray-500 mb-2">3. <span x-text="t('search')"></span> <span class="font-normal text-gray-400" x-text="'('+t('searchHint')+')'"></span></h2>
+            <div class="flex gap-2">
+              <input type="text" x-model="query" @keydown.enter="doSearch()"
+                     :placeholder="t('searchPlaceholder')"
+                     class="flex-1 border border-gray-300 rounded-md px-3 py-2 text-sm focus:ring-2 focus:ring-blue-400 outline-none">
+              <button class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-md text-sm flex items-center gap-1"
+                      @click="doSearch()" :disabled="searching">
+                <span class="loader" x-show="searching"></span>
+                <span x-text="t('searchBtn')"></span>
+              </button>
+            </div>
+          </section>
+
+          <section class="bg-white rounded-lg shadow flex-1 flex flex-col min-h-0" x-show="searchResult">
+            <div class="p-4 border-b flex items-center justify-between flex-shrink-0">
+              <h2 class="font-semibold text-sm text-gray-500"><span x-text="t('searchResults')"></span> <span class="text-blue-600" x-text="'('+(searchResult?.total||0)+')'"></span></h2>
+              <div class="flex items-center gap-3">
+                <label class="flex items-center gap-1 text-xs text-gray-500">
+                  <input type="checkbox" @change="toggleSelectAll($event.target.checked)"> <span x-text="t('selectAll')"></span>
+                </label>
+                <button class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1 rounded" @click="openPreviewPanel()" x-text="t('showTemplatePanel')"></button>
+              </div>
+            </div>
+            <div class="overflow-auto flex-1 p-2">
+              <table class="w-full text-xs border-collapse" x-show="filteredRows().length">
+                <thead><tr class="bg-gray-100 sticky top-0">
+                  <th class="px-2 py-1 border text-center w-8"><input type="checkbox" @change="toggleSelectAll($event.target.checked)"></th>
+                  <template x-for="col in displayCols()" :key="col"><th class="px-2 py-1 border text-left font-medium whitespace-nowrap" x-text="col"></th></template>
+                </tr></thead>
+                <tbody><template x-for="row in filteredRows()" :key="row._id">
+                  <tr class="hover:bg-blue-50 transition cursor-pointer" :class="selectedRows.has(row._id)?'bg-blue-100':''" @click="toggleRow(row._id)">
+                    <td class="px-2 py-1 border text-center"><input type="checkbox" :checked="selectedRows.has(row._id)" @click.stop="toggleRow(row._id)"></td>
+                    <template x-for="col in displayCols()" :key="col"><td class="px-2 py-1 border max-w-xs truncate" :title="row[col]" x-text="row[col]"></td></template>
+                  </tr>
+                </template></tbody>
+              </table>
+              <p class="text-center text-gray-400 py-8" x-show="searchResult&&filteredRows().length===0" x-text="t('noResults')"></p>
+            </div>
+          </section>
+        </div>
+
+        <!-- Right Panel – Template & Preview -->
+        <aside class="w-[420px] flex-shrink-0 space-y-4 transition-all" x-show="showTemplatePanel" x-cloak>
+          <section class="bg-white rounded-lg shadow p-4">
+            <div class="flex items-center justify-between mb-3">
+              <h2 class="font-semibold text-sm text-gray-500" x-text="'5. '+t('printTemplate')"></h2>
+              <div class="flex items-center gap-2">
+                <button class="text-xs px-2 py-0.5 rounded" :class="tplMode==='simple'?'bg-blue-600 text-white':'bg-gray-100'" @click="tplMode='simple'" x-text="t('simpleMode')"></button>
+                <button class="text-xs px-2 py-0.5 rounded" :class="tplMode==='advanced'?'bg-blue-600 text-white':'bg-gray-100'" @click="tplMode='advanced'" x-text="t('advancedMode')"></button>
+                <button class="text-xs text-gray-400 hover:text-red-500" @click="showTemplatePanel=false">&#10005;</button>
+              </div>
+            </div>
+            <div x-show="tplMode==='simple'">
+              <label class="block text-xs text-gray-500 mb-1" x-text="t('pickOutputFields')"></label>
+              <div class="max-h-48 overflow-y-auto border rounded p-2 mb-2">
+                <template x-for="col in selectedSheet?.columns||[]" :key="'tpl_'+col">
+                  <label class="flex items-center gap-1.5 text-xs py-0.5 cursor-pointer">
+                    <input type="checkbox" :value="col" x-model="tplFields" class="rounded text-blue-600" @change="autoPreview()">
+                    <span x-text="col" class="truncate"></span>
+                  </label>
+                </template>
+              </div>
+              <div class="flex gap-2 mb-2">
+                <button class="text-xs text-blue-600 hover:underline" @click="tplFields=[...visibleCols];autoPreview()" x-text="t('useVisibleCols')"></button>
+                <button class="text-xs text-blue-600 hover:underline" @click="tplFields=[...(selectedSheet?.columns||[])];autoPreview()" x-text="t('selectAll')"></button>
+                <button class="text-xs text-blue-600 hover:underline" @click="tplFields=[];autoPreview()" x-text="t('clearAll')"></button>
+              </div>
+            </div>
+            <div x-show="tplMode==='advanced'">
+              <div class="flex gap-2 mb-2">
+                <select class="flex-1 border rounded text-sm px-2 py-1" x-model="selectedTemplateId" @change="loadTemplate()">
+                  <option value="" x-text="'-- '+t('selectTemplate')+' --'"></option>
+                  <template x-for="tmpl in templates" :key="tmpl.id"><option :value="tmpl.id" x-text="tmpl.name"></option></template>
+                </select>
+                <button class="text-xs bg-green-600 text-white px-2 rounded hover:bg-green-700" @click="newTemplate()" x-text="t('newBtn')"></button>
+              </div>
+              <input type="text" x-model="tplName" :placeholder="t('templateName')" class="w-full border rounded text-sm px-2 py-1 mb-2">
+              <textarea x-model="tplBody" rows="8" :placeholder="t('templateBodyHint')" class="w-full border rounded text-sm px-2 py-1 font-mono leading-relaxed"></textarea>
+              <details class="mt-1">
+                <summary class="text-xs text-gray-400 cursor-pointer" x-text="t('availableColumns')"></summary>
+                <div class="flex flex-wrap gap-1 mt-1 max-h-28 overflow-y-auto">
+                  <template x-for="col in selectedSheet?.columns||[]" :key="'adv_'+col"><button class="text-xs bg-gray-100 hover:bg-blue-100 px-1.5 py-0.5 rounded border" @click="insertCol(col)" x-text="col"></button></template>
+                </div>
+              </details>
+              <div class="flex gap-2 mt-2">
+                <button class="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-sm py-1.5 rounded" @click="saveCurrentTemplate()" x-text="t('saveTemplate')"></button>
+                <button class="bg-red-500 hover:bg-red-600 text-white text-sm px-3 py-1.5 rounded" @click="deleteCurrentTemplate()" x-show="selectedTemplateId" x-text="t('deleteBtn')"></button>
+              </div>
+            </div>
+          </section>
+          <section class="bg-white rounded-lg shadow p-4">
+            <div class="flex items-center justify-between mb-2">
+              <h2 class="font-semibold text-sm text-gray-500" x-text="'6. '+t('previewAndPrint')"></h2>
+              <div class="flex gap-2">
+                <button class="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700" @click="autoPreview()" x-text="t('previewBtn')"></button>
+                <button class="text-xs bg-gray-700 text-white px-3 py-1 rounded hover:bg-gray-800" @click="doPrint()" x-text="t('printBtn')"></button>
+                <button class="text-xs bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700" @click="copyToClipboard()" x-text="t('copyBtn')"></button>
+              </div>
+            </div>
+            <div class="border rounded p-3 min-h-[150px] max-h-[50vh] overflow-y-auto text-sm leading-relaxed print-area bg-white" id="printArea"
+                 x-html="previewHtml||'<span class=\'text-gray-400\'>'+t('previewHint')+'</span>'"></div>
+          </section>
+        </aside>
+      </main>
+      <div class="hidden print:block p-6" id="printOnlyArea"></div>
+    </div>
+  </template>
+
+  <script>
+    const API_BASE = '';
+    const I18N = {
+      zh: {
+        title:'BYD 物流工单搜索系统', selectModel:'选择数据模型',
+        dataManagement:'数据管理', uploadNewExcel:'上传 Excel 文件',
+        replace:'替换上传', append:'追加上传',
+        selectSheet:'选择 Sheet', rows:'行', displayColumns:'显示列',
+        selectAll:'全选', clearAll:'清空',
+        search:'搜索', searchHint:'多关键词用空格分隔，AND 逻辑',
+        searchPlaceholder:'输入订单号、SKU、客户名等关键词…', searchBtn:'搜索',
+        searchResults:'搜索结果', noResults:'无匹配结果',
+        showTemplatePanel:'📋 打印/预览', printTemplate:'打印模板',
+        selectTemplate:'选择模板', newBtn:'新建', templateName:'模板名称',
+        templateBodyHint:'模板内容，使用 {{列名}} 占位符', availableColumns:'可用列名 (点击插入)',
+        saveTemplate:'保存模板', deleteBtn:'删除', previewAndPrint:'预览 & 打印',
+        previewBtn:'刷新预览', printBtn:'打印', copyBtn:'复制',
+        previewHint:'勾选行后自动生成预览',
+        uploadSuccess:'上传并处理完成！', uploadFailed:'上传失败',
+        confirmDelete:'确定删除此模板？', selectRowsFirst:'请先勾选要打印的行',
+        copiedToClipboard:'已复制到剪贴板', simpleMode:'简单', advancedMode:'HTML',
+        pickOutputFields:'选择要输出的字段：', useVisibleCols:'用当前显示列',
+        orderInfo:'订单信息', saveCols:'保存列设置', saved:'已保存', uploadHistory:'上传历史',
+        loginSubtitle:'物流工单搜索与打印系统',
+        loginWithGoogle:'使用 Google 账号登录',
+        loginFooter:'登录后即可上传数据、搜索与打印工单',
+        logout:'退出登录', noData:'未上传数据',
+        uploadPromptTitle:'请上传 Excel 数据文件',
+        uploadPromptDesc:'点击此处选择文件，或将 Excel 文件拖拽到此处',
+        dragDropHint:'支持 .xlsx / .xls 格式',
+        uploadError:'处理出错', dismiss:'关闭',
+        processingTitle:'正在处理数据...',
+        phaseUpload:'上传文件', phaseProcess:'解析处理', phaseReady:'完成',
+        processingSheet:'正在处理 Sheet',
+        rowsProcessed:'行已处理',
+        currentFile:'当前文件',
+        deleteModelData:'删除此模型数据',
+        confirmDeleteModel:'确定要删除此模型的所有数据（包括云端 Excel）吗？',
+        confirmClearHistory:'确定清空所有上传历史记录吗？',
+        filterColumns:'搜索列名...', selected:'已选',
+      },
+      en: {
+        title:'BYD Logistics Search System', selectModel:'Select Data Model',
+        dataManagement:'Data Management', uploadNewExcel:'Upload Excel file',
+        replace:'Replace', append:'Append',
+        selectSheet:'Select Sheet', rows:'rows', displayColumns:'Display Columns',
+        selectAll:'Select All', clearAll:'Clear',
+        search:'Search', searchHint:'Keywords separated by spaces, AND logic',
+        searchPlaceholder:'Enter order number, SKU, customer...', searchBtn:'Search',
+        searchResults:'Search Results', noResults:'No results',
+        showTemplatePanel:'📋 Print/Preview', printTemplate:'Print Template',
+        selectTemplate:'Select Template', newBtn:'New', templateName:'Template Name',
+        templateBodyHint:'Use {{column}} as placeholders', availableColumns:'Columns (click to insert)',
+        saveTemplate:'Save', deleteBtn:'Delete', previewAndPrint:'Preview & Print',
+        previewBtn:'Refresh', printBtn:'Print', copyBtn:'Copy',
+        previewHint:'Select rows to preview',
+        uploadSuccess:'Upload & processing complete!', uploadFailed:'Upload failed',
+        confirmDelete:'Delete template?', selectRowsFirst:'Select rows first',
+        copiedToClipboard:'Copied', simpleMode:'Simple', advancedMode:'HTML',
+        pickOutputFields:'Select output fields:', useVisibleCols:'Use visible columns',
+        orderInfo:'Order Info', saveCols:'Save columns', saved:'Saved', uploadHistory:'Upload History',
+        loginSubtitle:'Logistics Work Order Search & Print System',
+        loginWithGoogle:'Sign in with Google',
+        loginFooter:'Sign in to upload data, search, and print work orders',
+        logout:'Sign out', noData:'No data',
+        uploadPromptTitle:'Upload Excel Data File',
+        uploadPromptDesc:'Click here to select, or drag & drop an Excel file',
+        dragDropHint:'Supports .xlsx / .xls format',
+        uploadError:'Processing error', dismiss:'Dismiss',
+        processingTitle:'Processing data...',
+        phaseUpload:'Upload', phaseProcess:'Processing', phaseReady:'Ready',
+        processingSheet:'Processing Sheet',
+        rowsProcessed:'rows processed',
+        currentFile:'Current file',
+        deleteModelData:'Delete model data',
+        confirmDeleteModel:'Are you sure you want to delete all data for this model (including cloud Excel)?',
+        confirmClearHistory:'Clear all upload history?',
+        filterColumns:'Filter columns...', selected:'selected',
+      },
+      es: {
+        title:'BYD Sistema de Búsqueda Logística', selectModel:'Seleccionar Modelo',
+        dataManagement:'Gestión de Datos', uploadNewExcel:'Subir archivo Excel',
+        replace:'Reemplazar', append:'Agregar',
+        selectSheet:'Seleccionar Hoja', rows:'filas', displayColumns:'Columnas Visibles',
+        selectAll:'Seleccionar Todo', clearAll:'Limpiar',
+        search:'Buscar', searchHint:'Palabras clave separadas por espacios, lógica AND',
+        searchPlaceholder:'Ingrese nº pedido, SKU, cliente...', searchBtn:'Buscar',
+        searchResults:'Resultados', noResults:'Sin resultados',
+        showTemplatePanel:'📋 Imprimir/Vista Previa', printTemplate:'Plantilla',
+        selectTemplate:'Seleccionar Plantilla', newBtn:'Nueva', templateName:'Nombre Plantilla',
+        templateBodyHint:'Use {{columna}} como marcadores', availableColumns:'Columnas (clic para insertar)',
+        saveTemplate:'Guardar', deleteBtn:'Eliminar', previewAndPrint:'Vista Previa e Imprimir',
+        previewBtn:'Actualizar', printBtn:'Imprimir', copyBtn:'Copiar',
+        previewHint:'Seleccione filas para vista previa',
+        uploadSuccess:'¡Carga y procesamiento completo!', uploadFailed:'Error al subir',
+        confirmDelete:'¿Eliminar plantilla?', selectRowsFirst:'Seleccione filas primero',
+        copiedToClipboard:'Copiado', simpleMode:'Simple', advancedMode:'HTML',
+        pickOutputFields:'Campos a incluir:', useVisibleCols:'Usar columnas visibles',
+        orderInfo:'Info del Pedido', saveCols:'Guardar columnas', saved:'Guardado', uploadHistory:'Historial de Subidas',
+        loginSubtitle:'Sistema de búsqueda e impresión de órdenes logísticas',
+        loginWithGoogle:'Iniciar sesión con Google',
+        loginFooter:'Inicie sesión para subir datos, buscar e imprimir órdenes',
+        logout:'Cerrar sesión', noData:'Sin datos',
+        uploadPromptTitle:'Suba un archivo Excel',
+        uploadPromptDesc:'Haga clic aquí o arrastre y suelte un archivo Excel',
+        dragDropHint:'Formatos: .xlsx / .xls',
+        uploadError:'Error al procesar', dismiss:'Cerrar',
+        processingTitle:'Procesando datos...',
+        phaseUpload:'Subida', phaseProcess:'Procesando', phaseReady:'Listo',
+        processingSheet:'Procesando Hoja',
+        rowsProcessed:'filas procesadas',
+        currentFile:'Archivo actual',
+        deleteModelData:'Eliminar datos del modelo',
+        confirmDeleteModel:'¿Está seguro de eliminar todos los datos de este modelo (incluido el Excel en la nube)?',
+        confirmClearHistory:'¿Borrar todo el historial de subidas?',
+        filterColumns:'Filtrar columnas...', selected:'seleccionadas',
+      },
+    };
+
+    function app() {
+      return {
+        lang: localStorage.getItem('byd_lang')||'zh',
+        t(key) { return (I18N[this.lang]||I18N.zh)[key]||key; },
+        setLang(l) { this.lang=l; localStorage.setItem('byd_lang',l); document.title=this.t('title'); },
+
+        user:null, authReady:false, idToken:null,
+        models:[], selectedModel:null, sheets:[], selectedSheet:null,
+        query:'', searchResult:null, selectedRows:new Set(), visibleCols:[],
+        showTemplatePanel:false,
+        templates:[], selectedTemplateId:'', tplName:'', tplBody:'',
+        tplMode:'simple', tplFields:[], previewHtml:'',
+        searching:false, uploadFile:null, uploading:false, deleting:false,
+        colsSaved:false, uploadHistory:[], modelFileInfo:null, colFilter:'',
+
+        // job tracking
+        jobStatus:null, jobPercent:0, jobProgressText:'', jobFileName:'',
+        jobError:'', uploadPhase:'upload',
+        _jobUnsub:null,
+
+        async init() {
+          document.title = this.t('title');
+          fbAuth.onAuthStateChanged(async (u) => {
+            this.user = u; this.authReady = true;
+            if (u) {
+              this.idToken = await u.getIdToken();
+              await this.fetchModels();
+              await this.fetchTemplates();
+              this.loadUploadHistory();
+            }
+          });
+        },
+
+        authHeaders() { return {'Authorization':'Bearer '+(this.idToken||'')}; },
+        async refreshToken() { if (this.user) this.idToken = await this.user.getIdToken(true); },
+        async apiFetch(url, opts={}) {
+          await this.refreshToken();
+          opts.headers = {...opts.headers, ...this.authHeaders()};
+          const resp = await fetch(API_BASE+url, opts);
+          if (resp.status===401) { await this.refreshToken(); opts.headers={...opts.headers,...this.authHeaders()}; return fetch(API_BASE+url,opts); }
+          return resp;
+        },
+        async safeJson(resp) { const text=await resp.text(); try{return JSON.parse(text);}catch{return {error:text||`HTTP ${resp.status}`};} },
+
+        async googleLogin() { try { await fbAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider()); } catch(e) { console.error('Login:',e); } },
+        async logout() { await fbAuth.signOut(); this.uploadHistory=[]; this.models=[]; this.sheets=[]; this.selectedModel=null; this.selectedSheet=null; this.searchResult=null; },
+
+        handleDrop(e) {
+          const f = e.dataTransfer.files;
+          if (f.length>0 && this.selectedModel && f[0].name.match(/\.xlsx?$/i)) {
+            this.uploadFile = f[0]; this.uploadExcel('replace');
+          }
+        },
+
+        // ── Upload with async job tracking ──
+        uploadExcel(mode) {
+          if (!this.uploadFile || !this.selectedModel) return;
+          this.uploading = true;
+          this.jobStatus = 'uploading';
+          this.uploadPhase = 'upload';
+          this.jobPercent = 0;
+          this.jobFileName = this.uploadFile.name;
+          this.jobProgressText = this.t('phaseUpload');
+          this.jobError = '';
+          this._uploadMode = mode;
+
+          const self = this;
+          const xhr = new XMLHttpRequest();
+          const fd = new FormData();
+          fd.append('file', this.uploadFile);
+          fd.append('mode', mode);
+
+          xhr.upload.onprogress = function(e) {
+            if (e.lengthComputable) {
+              self.jobPercent = Math.round((e.loaded/e.total)*30);
+              self.jobProgressText = self.t('phaseUpload')+' ('+self.jobPercent+'%)';
+            }
+          };
+          xhr.upload.onload = function() {
+            self.jobPercent = 30;
+            self.uploadPhase = 'process';
+            self.jobProgressText = self.t('phaseProcess')+'...';
+          };
+          xhr.onload = async function() {
+            self.uploading = false;
+            let data;
+            try { data = JSON.parse(xhr.responseText); } catch { data = {error:xhr.responseText||`HTTP ${xhr.status}`}; }
+
+            if (xhr.status>=200 && xhr.status<300 && data.ok && data.jobId) {
+              self._watchJob(data.jobId);
+            } else {
+              self.jobStatus = 'error';
+              self.jobError = data.error || self.t('uploadFailed');
+            }
+          };
+          xhr.onerror = function() {
+            self.uploading = false;
+            self.jobStatus = 'error';
+            self.jobError = self.t('uploadFailed');
+          };
+
+          self.refreshToken().then(() => {
+            xhr.open('POST', API_BASE+`/api/models/${self.selectedModel}/upload`);
+            xhr.setRequestHeader('Authorization','Bearer '+(self.idToken||''));
+            xhr.timeout = 120000;
+            xhr.send(fd);
+          });
+        },
+
+        _watchJob(jobId) {
+          if (this._jobUnsub) this._jobUnsub();
+          const ref = fbDb.collection('users').doc(this.user.uid).collection('jobs').doc(jobId);
+          this._jobUnsub = ref.onSnapshot((snap) => {
+            if (!snap.exists) return;
+            const d = snap.data();
+            this.jobStatus = d.status;
+
+            if (d.status === 'processing') {
+              this.uploadPhase = 'process';
+              const total = d.totalSheets || 1;
+              const current = d.currentSheet || 0;
+              const rows = d.rowsProcessed || 0;
+              const sheetProgress = total > 0 ? (current / total) : 0;
+              this.jobPercent = Math.round(30 + sheetProgress * 65);
+              this.jobProgressText = `${this.t('processingSheet')} ${current}/${total} — ${d.currentSheetName||''} (${rows.toLocaleString()} ${this.t('rowsProcessed')})`;
+            } else if (d.status === 'done') {
+              this.jobPercent = 100;
+              this.uploadPhase = 'done';
+              this.jobProgressText = '✓ ' + this.t('uploadSuccess');
+              if (d.sheets) this.sheets = d.sheets;
+              this.selectedSheet = null;
+              this.searchResult = null;
+              const fileName = this.jobFileName;
+              this.uploadFile = null;
+              const fi = document.getElementById('sidebarFileInput');
+              if (fi) fi.value = '';
+              this.fetchModels();
+              this.fetchModelFileInfo(this.selectedModel);
+              this.recordUpload(fileName, this.selectedModel, this._uploadMode || 'replace');
+              if (this._jobUnsub) { this._jobUnsub(); this._jobUnsub = null; }
+              setTimeout(() => { this.jobStatus = null; }, 3000);
+            } else if (d.status === 'error') {
+              this.jobError = d.error || this.t('uploadFailed');
+              this.uploadPhase = 'process';
+              if (this._jobUnsub) { this._jobUnsub(); this._jobUnsub = null; }
+            } else if (d.status === 'queued') {
+              this.uploadPhase = 'process';
+              this.jobPercent = 30;
+              this.jobProgressText = this.t('phaseProcess')+'...';
+            }
+          });
+        },
+
+        // ── Firestore helpers ──
+        async saveColPrefs(showFb) {
+          if (!this.user||!this.selectedSheet) return;
+          const k = `${this.selectedModel}_${this.selectedSheet.table_name}`;
+          try { await fbDb.collection('users').doc(this.user.uid).collection('columnPrefs').doc(k).set({columns:this.visibleCols,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+            if (showFb){this.colsSaved=true;setTimeout(()=>this.colsSaved=false,2000);}
+          } catch(e){console.error(e);}
+        },
+        async loadColPrefs() {
+          if (!this.user||!this.selectedSheet) return false;
+          const k = `${this.selectedModel}_${this.selectedSheet.table_name}`;
+          try { const s=await fbDb.collection('users').doc(this.user.uid).collection('columnPrefs').doc(k).get();
+            if (s.exists){this.visibleCols=s.data().columns||[];return true;}
+          } catch(e){console.error(e);}
+          return false;
+        },
+        async recordUpload(fn,m,mode) {
+          if (!this.user) return;
+          try { await fbDb.collection('users').doc(this.user.uid).collection('uploads').add({fileName:fn,model:m,mode,date:new Date().toISOString().slice(0,10),createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+            this.loadUploadHistory();
+          } catch(e){console.error(e);}
+        },
+        async loadUploadHistory() {
+          if (!this.user) return;
+          try { const s=await fbDb.collection('users').doc(this.user.uid).collection('uploads').get();
+            this.uploadHistory=s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0)).slice(0,20);
+          } catch(e){console.error(e);}
+        },
+        async deleteHistoryItem(docId) {
+          if (!this.user) return;
+          try { await fbDb.collection('users').doc(this.user.uid).collection('uploads').doc(docId).delete(); this.loadUploadHistory(); } catch(e){console.error(e);}
+        },
+        async clearAllHistory() {
+          if (!this.user || !confirm(this.t('confirmClearHistory'))) return;
+          try { const s=await fbDb.collection('users').doc(this.user.uid).collection('uploads').get();
+            const batch=fbDb.batch(); s.docs.forEach(d=>batch.delete(d.ref)); await batch.commit(); this.uploadHistory=[];
+          } catch(e){console.error(e);}
+        },
+        async deleteModelData() {
+          if (!this.selectedModel || !confirm(this.t('confirmDeleteModel'))) return;
+          this.deleting = true;
+          try {
+            await this.apiFetch(`/api/models/${this.selectedModel}/data`, {method:'DELETE'});
+            this.sheets=[]; this.selectedSheet=null; this.searchResult=null; this.modelFileInfo=null;
+            await this.fetchModels();
+          } catch(e){console.error(e);}
+          this.deleting = false;
+        },
+        async saveUserTemplate() {
+          if (!this.user) return; const id=this.selectedTemplateId||Date.now().toString();
+          try { await fbDb.collection('users').doc(this.user.uid).collection('templates').doc(id).set({name:this.tplName,body:this.tplBody,updatedAt:firebase.firestore.FieldValue.serverTimestamp()});
+            this.selectedTemplateId=id; await this.fetchUserTemplates();
+          } catch(e){console.error(e);}
+        },
+        async fetchUserTemplates() {
+          if (!this.user) return;
+          try { const s=await fbDb.collection('users').doc(this.user.uid).collection('templates').get();
+            const ut=s.docs.map(d=>({id:d.id,...d.data()}));
+            let at=[]; try{at=await this.safeJson(await this.apiFetch('/api/templates'));if(!Array.isArray(at))at=[];}catch(e){}
+            this.templates=[...at,...ut.map(t=>({...t,_user:true}))];
+          } catch(e){console.error(e);}
+        },
+
+        // ── Models ──
+        async fetchModels() { try{const d=await this.safeJson(await this.apiFetch('/api/models'));if(Array.isArray(d))this.models=d;}catch(e){console.error(e);} },
+        async selectModel(id) {
+          this.selectedModel=id; this.selectedSheet=null; this.searchResult=null; this.sheets=[]; this.modelFileInfo=null;
+          try{const d=await this.safeJson(await this.apiFetch(`/api/models/${id}/sheets`));if(Array.isArray(d))this.sheets=d;}catch(e){console.error(e);}
+          this.fetchModelFileInfo(id);
+        },
+        async fetchModelFileInfo(id) {
+          try{this.modelFileInfo=await this.safeJson(await this.apiFetch(`/api/models/${id}/info`));}catch(e){this.modelFileInfo=null;}
+        },
+        async selectSheet(s) {
+          this.selectedSheet=s; this.visibleCols=[...s.columns]; this.searchResult=null; this.selectedRows=new Set(); this.tplFields=[]; this.colFilter='';
+          if(!(await this.loadColPrefs())) this.visibleCols=[...s.columns];
+        },
+        filteredColumns() {
+          const cols = this.selectedSheet?.columns || [];
+          if (!this.colFilter.trim()) return cols;
+          const q = this.colFilter.trim().toLowerCase();
+          return cols.filter(c => c.toLowerCase().includes(q));
+        },
+
+        // ── Search ──
+        async doSearch() {
+          if (!this.selectedSheet||!this.query.trim()) return;
+          this.searching=true; this.selectedRows=new Set();
+          try{const p=new URLSearchParams({table:this.selectedSheet.table_name,q:this.query.trim(),limit:200});
+            this.searchResult=await this.safeJson(await this.apiFetch(`/api/search?${p}`));
+          }finally{this.searching=false;}
+        },
+        displayCols() { if(!this.selectedSheet)return[]; return this.visibleCols.length===0?this.selectedSheet.columns:this.visibleCols; },
+        filteredRows() { return this.searchResult?.rows||[]; },
+        toggleRow(id) { const s=new Set(this.selectedRows); if(s.has(id))s.delete(id);else s.add(id); this.selectedRows=s; if(this.showTemplatePanel)this.autoPreview(); },
+        toggleSelectAll(c) { this.selectedRows=c?new Set(this.filteredRows().map(r=>r._id)):new Set(); if(this.showTemplatePanel)this.autoPreview(); },
+        getSelectedRowData() { return this.filteredRows().filter(r=>this.selectedRows.has(r._id)).map(r=>{const o={};for(const c of this.selectedSheet.columns)o[c]=r[c]||'';return o;}); },
+        openPreviewPanel() {
+          if(this.selectedRows.size===0)this.selectedRows=new Set(this.filteredRows().map(r=>r._id));
+          if(this.tplFields.length===0)this.tplFields=[...this.visibleCols];
+          this.showTemplatePanel=true; this.$nextTick(()=>this.autoPreview());
+        },
+        autoPreview() {
+          const rows=this.getSelectedRowData(); if(!rows.length){this.previewHtml='';return;}
+          if(this.tplMode==='simple'){
+            const fields=this.tplFields.length>0?this.tplFields:this.displayCols();
+            let h=''; rows.forEach((row,i)=>{h+='<div class="print-card"><h3>'+this.t('orderInfo')+' #'+(i+1)+'</h3>';
+              fields.forEach(f=>{const v=row[f]||'';if(v)h+='<div class="field-row"><span class="field-label">'+this.escHtml(f)+'</span><span class="field-value">'+this.escHtml(String(v))+'</span></div>';});
+              h+='</div>';}); this.previewHtml=h;
+          } else this.renderPreview();
+        },
+        escHtml(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;},
+
+        // ── Templates ──
+        async fetchTemplates(){if(this.user){await this.fetchUserTemplates();return;}try{const d=await this.safeJson(await this.apiFetch('/api/templates'));if(Array.isArray(d))this.templates=d;}catch(e){}},
+        async loadTemplate(){if(!this.selectedTemplateId){this.tplName='';this.tplBody='';return;}const t=this.templates.find(t=>t.id===this.selectedTemplateId);if(t){this.tplName=t.name||'';this.tplBody=t.body||'';return;}try{const r=await this.safeJson(await this.apiFetch(`/api/templates/${this.selectedTemplateId}`));this.tplName=r.name||'';this.tplBody=r.body||'';}catch(e){}},
+        newTemplate(){this.selectedTemplateId='';this.tplName='';this.tplBody='';},
+        insertCol(c){this.tplBody+='{{'+c+'}}';},
+        async saveCurrentTemplate(){if(this.user){await this.saveUserTemplate();return;}const p={name:this.tplName,body:this.tplBody};let u='/api/templates',m='POST';if(this.selectedTemplateId){u=`/api/templates/${this.selectedTemplateId}`;m='PUT';}try{const t=await this.safeJson(await this.apiFetch(u,{method:m,headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}));this.selectedTemplateId=t.id;await this.fetchTemplates();}catch(e){}},
+        async deleteCurrentTemplate(){if(!this.selectedTemplateId||!confirm(this.t('confirmDelete')))return;const t=this.templates.find(t=>t.id===this.selectedTemplateId);if(t?._user&&this.user){await fbDb.collection('users').doc(this.user.uid).collection('templates').doc(this.selectedTemplateId).delete();}else{await this.apiFetch(`/api/templates/${this.selectedTemplateId}`,{method:'DELETE'});}this.selectedTemplateId='';this.tplName='';this.tplBody='';await this.fetchTemplates();},
+        async renderPreview(){const rows=this.getSelectedRowData();if(!rows.length){alert(this.t('selectRowsFirst'));return;}try{const d=await this.safeJson(await this.apiFetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({body:this.tplBody,rows})}));this.previewHtml=d.html||d.error||'';}catch(e){}},
+        doPrint(){document.getElementById('printOnlyArea').innerHTML=document.getElementById('printArea').innerHTML;window.print();},
+        async copyToClipboard(){const t=document.getElementById('printArea').innerText;try{await navigator.clipboard.writeText(t);}catch{document.execCommand('copy');}alert(this.t('copiedToClipboard'));},
+      };
+    }
+  </script>
+</body>
+</html>
