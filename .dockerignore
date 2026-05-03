@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.git
+byd_search.db
+uploads/
+user_data/
+_verify.py
+_check_merges.py
+public/
+firebase.json
+.firebaserc
+firestore.rules
+node_modules/
+*.xlsx
