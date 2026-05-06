@@ -119,6 +119,38 @@ def download_from_firebase_storage(storage_path: str, local_path: str) -> bool:
     return True
 
 
+def delete_firebase_storage_file(storage_path: str) -> bool:
+    """Delete a file from the Firebase Storage bucket after processing."""
+    try:
+        bucket = _get_client().bucket(FIREBASE_STORAGE_BUCKET)
+        blob = bucket.blob(storage_path)
+        if blob.exists():
+            blob.delete()
+            _log(f"Deleted from Firebase Storage: {storage_path}")
+            return True
+        return False
+    except Exception as e:
+        _log(f"Firebase Storage delete failed for {storage_path}: {e}")
+        return False
+
+
+def cleanup_user_firebase_storage(uid: str) -> int:
+    """Delete all files under uploads/{uid}/ in Firebase Storage to free space."""
+    prefix = f"uploads/{uid}/"
+    bucket = _get_client().bucket(FIREBASE_STORAGE_BUCKET)
+    blobs = list(bucket.list_blobs(prefix=prefix))
+    deleted = 0
+    for blob in blobs:
+        try:
+            blob.delete()
+            deleted += 1
+        except Exception:
+            pass
+    if deleted:
+        _log(f"Cleaned up {deleted} file(s) from Firebase Storage for user {uid[:8]}...")
+    return deleted
+
+
 def list_user_models(uid: str) -> list[str]:
     prefix = f"{uid}/"
     bucket = _get_client().bucket(BUCKET_NAME)

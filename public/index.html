@@ -115,12 +115,33 @@
         <!-- Left Sidebar -->
         <aside class="w-72 flex-shrink-0 space-y-4">
           <section class="bg-white rounded-lg shadow p-4">
-            <h2 class="font-semibold text-sm text-gray-500 mb-2" x-text="'1. ' + t('selectModel')"></h2>
+            <div class="flex items-center justify-between mb-2">
+              <h2 class="font-semibold text-sm text-gray-500" x-text="'1. ' + t('selectModel')"></h2>
+              <button class="w-6 h-6 flex items-center justify-center rounded-full bg-blue-100 hover:bg-blue-200 text-blue-600 transition text-sm font-bold"
+                      @click="showAddModel=!showAddModel" :title="t('addModel')">+</button>
+            </div>
+
+            <!-- Create new model inline form -->
+            <div x-show="showAddModel" x-transition class="mb-3 p-2.5 bg-blue-50 rounded-lg border border-blue-200">
+              <label class="block text-xs font-medium text-blue-700 mb-1" x-text="t('newModelName')"></label>
+              <input type="text" x-model="newModelName" :placeholder="t('newModelPlaceholder')"
+                     class="w-full border border-blue-200 rounded px-2 py-1.5 text-xs focus:ring-1 focus:ring-blue-400 outline-none mb-2"
+                     @keydown.enter="createNewModel()">
+              <div class="flex gap-2">
+                <button class="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-xs py-1.5 rounded-md transition"
+                        @click="createNewModel()" :disabled="!newModelName.trim()||creatingModel"
+                        x-text="creatingModel?'...':t('createModel')"></button>
+                <button class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-600 text-xs py-1.5 rounded-md transition"
+                        @click="showAddModel=false;newModelName=''" x-text="t('cancelBtn')"></button>
+              </div>
+            </div>
+
             <template x-for="m in models" :key="m.id">
               <button class="w-full text-left px-3 py-2 rounded-md text-sm mb-1 transition"
                 :class="selectedModel===m.id?'bg-blue-600 text-white':'hover:bg-gray-100'"
                 @click="selectModel(m.id)">
                 <span x-text="m.name"></span>
+                <span class="text-xs opacity-60" x-show="m.custom" x-text="'('+t('customTag')+')'"></span>
                 <span class="text-xs opacity-60" x-text="m.loaded?'':'('+t('noData')+')'"></span>
               </button>
             </template>
@@ -447,6 +468,11 @@
         confirmDeleteModel:'确定要删除此模型的所有数据（包括云端 Excel）吗？',
         confirmClearHistory:'确定清空所有上传历史记录吗？',
         filterColumns:'搜索列名...', selected:'已选',
+        addModel:'新建模型', newModelName:'输入模型名称',
+        newModelPlaceholder:'例如: BYD乘用车 Outbound',
+        createModel:'创建', cancelBtn:'取消',
+        modelCreated:'模型创建成功', modelExists:'模型已存在',
+        customTag:'自定义',
       },
       en: {
         title:'BYD Logistics Search System', selectModel:'Select Data Model',
@@ -485,6 +511,11 @@
         confirmDeleteModel:'Are you sure you want to delete all data for this model (including cloud Excel)?',
         confirmClearHistory:'Clear all upload history?',
         filterColumns:'Filter columns...', selected:'selected',
+        addModel:'New Model', newModelName:'Enter model name',
+        newModelPlaceholder:'e.g. BYD Outbound Report',
+        createModel:'Create', cancelBtn:'Cancel',
+        modelCreated:'Model created', modelExists:'Model already exists',
+        customTag:'Custom',
       },
       es: {
         title:'BYD Sistema de Búsqueda Logística', selectModel:'Seleccionar Modelo',
@@ -523,6 +554,11 @@
         confirmDeleteModel:'¿Está seguro de eliminar todos los datos de este modelo (incluido el Excel en la nube)?',
         confirmClearHistory:'¿Borrar todo el historial de subidas?',
         filterColumns:'Filtrar columnas...', selected:'seleccionadas',
+        addModel:'Nuevo Modelo', newModelName:'Nombre del modelo',
+        newModelPlaceholder:'ej. BYD Outbound Report',
+        createModel:'Crear', cancelBtn:'Cancelar',
+        modelCreated:'Modelo creado', modelExists:'El modelo ya existe',
+        customTag:'Personalizado',
       },
     };
 
@@ -540,6 +576,7 @@
         tplMode:'simple', tplFields:[], previewHtml:'',
         searching:false, uploadFile:null, uploading:false, deleting:false,
         colsSaved:false, uploadHistory:[], modelFileInfo:null, colFilter:'',
+        showAddModel:false, newModelName:'', creatingModel:false,
 
         // job tracking
         jobStatus:null, jobPercent:0, jobProgressText:'', jobFileName:'',
@@ -838,6 +875,28 @@
 
         // ── Models ──
         async fetchModels() { try{const d=await this.safeJson(await this.apiFetch('/api/models'));if(Array.isArray(d))this.models=d;}catch(e){console.error(e);} },
+        async createNewModel() {
+          const name = this.newModelName.trim();
+          if (!name) return;
+          this.creatingModel = true;
+          try {
+            const resp = await this.apiFetch('/api/models', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({name})
+            });
+            const data = await this.safeJson(resp);
+            if (data.ok) {
+              this.showAddModel = false;
+              this.newModelName = '';
+              await this.fetchModels();
+              this.selectModel(data.modelId);
+            } else {
+              alert(data.error || this.t('uploadFailed'));
+            }
+          } catch(e) { console.error(e); alert(e.message); }
+          finally { this.creatingModel = false; }
+        },
         async selectModel(id) {
           this.selectedModel=id; this.selectedSheet=null; this.searchResult=null; this.sheets=[]; this.modelFileInfo=null;
           try{const d=await this.safeJson(await this.apiFetch(`/api/models/${id}/sheets`));if(Array.isArray(d))this.sheets=d;}catch(e){console.error(e);}

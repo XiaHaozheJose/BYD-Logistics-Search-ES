@@ -190,6 +190,61 @@ def load_excel_to_db(
         _log(f"Finished with {len(failed_sheets)} failed sheet(s): {failed_sheets}")
 
 
+def _find_header_row(ws, max_scan: int = 10) -> tuple[int, tuple]:
+    """Detect the real header row by scanning the first few rows.
+
+    Heuristic: if a row has <=2 non-empty cells, it's likely a title/meta row.
+    The header is the first row with >=3 non-empty cells, or the row with the
+    most non-empty string-like cells among the first ``max_scan`` rows.
+    """
+    candidates: list[tuple[int, tuple, int]] = []
+    for i, row in enumerate(ws.iter_rows(min_row=1, max_row=max_scan, values_only=True)):
+        row_tuple = tuple(row)
+        non_empty = sum(1 for v in row_tuple if v is not None and str(v).strip())
+        candidates.append((i + 1, row_tuple, non_empty))
+
+    if not candidates:
+        return 1, ()
+
+    for row_num, row_tuple, count in candidates:
+        if count >= 3:
+            return row_num, row_tuple
+
+    best = max(candidates, key=lambda x: x[2])
+    return best[0], best[1]
+
+
+_PLACEHOLDER_RE = re.compile(
+    r"^(col_\d+|第\s*.+\s*列.*|column\s*\d+|\.\.*|_{2,})$", re.IGNORECASE
+)
+
+
+def _is_placeholder_header(name) -> bool:
+    """Check if a header name is an auto-generated placeholder."""
+    if name is None:
+        return True
+    s = str(name).strip()
+    if not s:
+        return True
+    return bool(_PLACEHOLDER_RE.match(s))
+
+
+def _identify_empty_columns(header_row: tuple, sample_rows: list[tuple]) -> set[int]:
+    """Return column indices to skip: placeholder/empty header with no sample data."""
+    empty = set()
+    for i, h in enumerate(header_row):
+        if not _is_placeholder_header(h):
+            continue
+        has_data = False
+        for row in sample_rows:
+            if i < len(row) and row[i] is not None and str(row[i]).strip():
+                has_data = True
+                break
+        if not has_data:
+            empty.add(i)
+    return empty
+
+
 def _process_sheet(
     conn: sqlite3.Connection,
     model_id: str,
@@ -208,27 +263,65 @@ def _process_sheet(
     try:
         ws = wb[sheet_name]
 
-        header_row = None
-        for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
-            header_row = row
-            break
-        if not header_row:
+        header_row_num, header_raw = _find_header_row(ws)
+        if not header_raw or all(v is None for v in header_raw):
             if on_progress:
                 on_progress(sheet_idx, total_sheets, sheet_name, 0)
             return
 
-        columns = [_safe_col_name(c, i) for i, c in enumerate(header_row)]
+        if header_row_num > 1:
+            _log(f"Sheet {sheet_idx}/{total_sheets}: '{sheet_name}' — "
+                 f"auto-detected header at row {header_row_num}")
+
+        # Trim trailing None columns from header
+        header_list = list(header_raw)
+        while header_list and header_list[-1] is None:
+            header_list.pop()
+        if not header_list:
+            if on_progress:
+                on_progress(sheet_idx, total_sheets, sheet_name, 0)
+            return
+
+        # Sample a few data rows to detect empty columns
+        sample_rows: list[tuple] = []
+        data_start = header_row_num + 1
+        for row in ws.iter_rows(min_row=data_start, max_row=data_start + 99,
+                                values_only=True):
+            sample_rows.append(tuple(row))
+
+        empty_cols = _identify_empty_columns(tuple(header_list), sample_rows)
+
+        # Build final column list, excluding empty columns
+        keep_indices: list[int] = []
+        raw_columns: list[str] = []
+        for i, h in enumerate(header_list):
+            if i in empty_cols:
+                continue
+            keep_indices.append(i)
+            raw_columns.append(_safe_col_name(h, i))
+
+        if not keep_indices:
+            if on_progress:
+                on_progress(sheet_idx, total_sheets, sheet_name, 0)
+            return
+
+        # Deduplicate column names
         seen: dict[str, int] = {}
-        deduped: list[str] = []
-        for c in columns:
+        columns: list[str] = []
+        for c in raw_columns:
             if c in seen:
                 seen[c] += 1
-                deduped.append(f"{c}_{seen[c]}")
+                columns.append(f"{c}_{seen[c]}")
             else:
                 seen[c] = 0
-                deduped.append(c)
-        columns = deduped
+                columns.append(c)
+
         num_cols = len(columns)
+        full_width = len(header_list)
+
+        if empty_cols:
+            _log(f"Sheet {sheet_idx}/{total_sheets}: '{sheet_name}' — "
+                 f"skipped {len(empty_cols)} empty column(s), keeping {num_cols}")
 
         table = f"{model_id}__{_slugify(sheet_name)}"
         fts_table = f"{table}__fts"
@@ -249,15 +342,15 @@ def _process_sheet(
         batch: list[tuple] = []
         rows_processed = 0
 
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            excel_row = rows_processed + 2
+        for row in ws.iter_rows(min_row=data_start, values_only=True):
+            excel_row = header_row_num + rows_processed + 1
             row_list = list(row)
 
-            while len(row_list) < num_cols:
+            while len(row_list) < full_width:
                 row_list.append(None)
 
             if source_cells or fill_cells:
-                for col_idx in range(num_cols):
+                for col_idx in range(full_width):
                     cell_key = (excel_row, col_idx)
                     if cell_key in source_cells:
                         source_cells[cell_key] = row_list[col_idx]
@@ -267,7 +360,7 @@ def _process_sheet(
                         if src_val is not None:
                             row_list[col_idx] = src_val
 
-            vals = tuple(_cell_to_str(row_list[i]) for i in range(num_cols))
+            vals = tuple(_cell_to_str(row_list[i]) for i in keep_indices)
             if all(v == "" for v in vals):
                 rows_processed += 1
                 continue
@@ -407,5 +500,59 @@ def get_all_loaded_models(db_path: str) -> list[str]:
         )
         cur = conn.execute("SELECT DISTINCT model_id FROM model_meta")
         return [r[0] for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+# ── Custom models (user-defined, stored in per-user SQLite) ──────────
+
+_CUSTOM_MODELS_DDL = (
+    "CREATE TABLE IF NOT EXISTS custom_models ("
+    "  model_id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT)"
+)
+
+
+def _ensure_custom_models_table(conn: sqlite3.Connection):
+    conn.execute(_CUSTOM_MODELS_DDL)
+
+
+def create_custom_model(db_path: str, model_id: str, name: str) -> dict:
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    try:
+        _ensure_custom_models_table(conn)
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        conn.execute(
+            "INSERT OR REPLACE INTO custom_models (model_id, name, created_at) VALUES (?, ?, ?)",
+            (model_id, name, now),
+        )
+        conn.commit()
+        return {"id": model_id, "name": name, "created_at": now}
+    finally:
+        conn.close()
+
+
+def get_custom_models(db_path: str) -> list[dict]:
+    if not os.path.isfile(db_path):
+        return []
+    conn = sqlite3.connect(db_path)
+    try:
+        _ensure_custom_models_table(conn)
+        cur = conn.execute("SELECT model_id, name, created_at FROM custom_models ORDER BY created_at")
+        return [{"id": r[0], "name": r[1], "created_at": r[2]} for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def delete_custom_model(db_path: str, model_id: str) -> bool:
+    if not os.path.isfile(db_path):
+        return False
+    conn = sqlite3.connect(db_path)
+    try:
+        _ensure_custom_models_table(conn)
+        _drop_model_tables(conn, model_id)
+        conn.execute("DELETE FROM custom_models WHERE model_id = ?", (model_id,))
+        conn.commit()
+        return True
     finally:
         conn.close()

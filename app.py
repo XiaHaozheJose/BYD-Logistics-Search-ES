@@ -42,11 +42,16 @@ if not LOCAL_MODE:
         delete_model_files as gcs_delete_model,
         get_model_file_info as gcs_file_info,
         download_from_firebase_storage,
+        delete_firebase_storage_file,
+        cleanup_user_firebase_storage,
     )
     firebase_admin.initialize_app()
 
-from config import MODELS, UPLOAD_DIR, get_user_db_path, get_user_upload_dir
-from data_loader import load_excel_to_db, get_model_sheets, get_all_loaded_models
+from config import MODELS, PRESET_MODELS, UPLOAD_DIR, get_user_db_path, get_user_upload_dir
+from data_loader import (
+    load_excel_to_db, get_model_sheets, get_all_loaded_models,
+    create_custom_model, get_custom_models, delete_custom_model,
+)
 from search_engine import search
 from template_engine import (
     list_templates,
@@ -71,8 +76,26 @@ _db_lock = threading.Lock()
 _executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="upload")
 
 
+_SLUG_RE = __import__("re").compile(r"[^a-z0-9]+")
+
+
 def _log(msg):
     print(f"[BYD] {msg}", file=sys.stderr, flush=True)
+
+
+def _slugify(name: str) -> str:
+    """Generate a safe model ID from a display name."""
+    slug = _SLUG_RE.sub("_", name.lower()).strip("_")
+    return slug[:60] or "model"
+
+
+def _get_all_models(uid: str) -> dict[str, str]:
+    """Return {model_id: display_name} combining presets and user-created models."""
+    result = {mid: info["name"] for mid, info in PRESET_MODELS.items()}
+    db_path = get_user_db_path(uid)
+    for cm in get_custom_models(db_path):
+        result[cm["id"]] = cm["name"]
+    return result
 
 
 @app.after_request
@@ -151,7 +174,8 @@ def _update_job(uid: str, job_id: str, data: dict):
         _log(f"Firestore update FAILED for job {job_id}: {e}")
 
 
-def _process_upload(uid: str, model_id: str, excel_path: str, job_id: str, mode: str):
+def _process_upload(uid: str, model_id: str, excel_path: str, job_id: str,
+                    mode: str, storage_path: str = ""):
     _log(f"Processing started: job={job_id}, model={model_id}")
     db_path = get_user_db_path(uid)
     last_update = [0.0]
@@ -204,6 +228,13 @@ def _process_upload(uid: str, model_id: str, excel_path: str, job_id: str, mode:
         except OSError:
             pass
 
+        # Clean up Firebase Storage file after successful processing
+        if not LOCAL_MODE and storage_path:
+            try:
+                delete_firebase_storage_file(storage_path)
+            except Exception as e:
+                _log(f"Firebase Storage cleanup warning: {e}")
+
         _log(f"Processing done: job={job_id}, {len(sheet_data)} sheets")
         _update_job(uid, job_id, {"status": "done", "sheets": sheet_data})
     except Exception as e:
@@ -237,9 +268,36 @@ def api_job_status(job_id, uid):
 
 # ── Model / Data API ────────────────────────────────────────────────────
 
-@app.route("/api/models")
+@app.route("/api/models", methods=["GET", "POST", "OPTIONS"])
 @require_auth
 def api_models(uid):
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+
+    # POST: create a new custom model
+    if request.method == "POST":
+        data = request.get_json(force=True)
+        name = (data.get("name") or "").strip()
+        if not name:
+            return jsonify({"error": "Model name is required"}), 400
+
+        custom_id = "custom_" + _slugify(name)
+        all_models = _get_all_models(uid)
+        if custom_id in all_models:
+            return jsonify({"error": "Model already exists", "modelId": custom_id}), 409
+
+        _ensure_user_db(uid)
+        db_path = get_user_db_path(uid)
+        create_custom_model(db_path, custom_id, name)
+        if not LOCAL_MODE:
+            try:
+                gcs_upload_db(uid, db_path)
+            except Exception:
+                pass
+        _log(f"Custom model created: {custom_id} ({name})")
+        return jsonify({"ok": True, "modelId": custom_id, "name": name}), 201
+
+    # GET: list all models
     _ensure_user_db(uid)
     db_path = get_user_db_path(uid)
     loaded_local = set(get_all_loaded_models(db_path))
@@ -251,12 +309,14 @@ def api_models(uid):
         except Exception:
             pass
 
+    all_models = _get_all_models(uid)
     result = []
-    for mid, info in MODELS.items():
+    for mid, name in all_models.items():
         result.append({
             "id": mid,
-            "name": info["name"],
+            "name": name,
             "loaded": mid in loaded_local or mid in gcs_models,
+            "custom": mid not in PRESET_MODELS,
         })
     return jsonify(result)
 
@@ -266,7 +326,8 @@ def api_models(uid):
 def api_upload_model(model_id, uid):
     if request.method == "OPTIONS":
         return jsonify({}), 200
-    if model_id not in MODELS:
+    all_models = _get_all_models(uid)
+    if model_id not in all_models:
         return jsonify({"error": "Unknown model"}), 404
 
     uploaded = request.files.get("file")
@@ -307,7 +368,8 @@ def api_process_model(model_id, uid):
     """Process an Excel file that was uploaded directly to Firebase Storage."""
     if request.method == "OPTIONS":
         return jsonify({}), 200
-    if model_id not in MODELS:
+    all_models = _get_all_models(uid)
+    if model_id not in all_models:
         return jsonify({"error": "Unknown model"}), 404
 
     data = request.get_json(force=True)
@@ -340,8 +402,21 @@ def api_process_model(model_id, uid):
         "rowsProcessed": 0,
     })
 
-    _executor.submit(_process_upload, uid, model_id, excel_path, job_id, mode)
+    _executor.submit(_process_upload, uid, model_id, excel_path, job_id, mode,
+                     storage_path=storage_path)
     return jsonify({"ok": True, "jobId": job_id})
+
+
+@app.route("/api/models/<model_id>/cleanup-storage", methods=["POST", "OPTIONS"])
+@require_auth
+def api_cleanup_storage(model_id, uid):
+    """Manually clean up all Firebase Storage files for a user."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    if LOCAL_MODE:
+        return jsonify({"ok": True, "deleted": 0})
+    deleted = cleanup_user_firebase_storage(uid)
+    return jsonify({"ok": True, "deleted": deleted})
 
 
 @app.route("/api/models/<model_id>/sheets")
@@ -379,13 +454,12 @@ def api_model_info(model_id, uid):
 @app.route("/api/models/<model_id>/data", methods=["DELETE", "OPTIONS"])
 @require_auth
 def api_delete_model_data(model_id, uid):
-    """Delete all data for a model: SQLite tables + GCS files."""
+    """Delete all data for a model: SQLite tables + GCS files + custom model entry."""
     if request.method == "OPTIONS":
         return jsonify({}), 200
 
     db_path = get_user_db_path(uid)
 
-    # Drop SQLite tables for this model
     if os.path.isfile(db_path):
         try:
             conn = sqlite3.connect(db_path)
@@ -396,6 +470,11 @@ def api_delete_model_data(model_id, uid):
             _log(f"Dropped SQLite tables for model={model_id}, user={uid[:8]}")
         except Exception as e:
             _log(f"SQLite cleanup error: {e}")
+
+    # Remove custom model definition if it exists
+    is_custom = model_id not in PRESET_MODELS
+    if is_custom:
+        delete_custom_model(db_path, model_id)
 
     if not LOCAL_MODE:
         if os.path.isfile(db_path):

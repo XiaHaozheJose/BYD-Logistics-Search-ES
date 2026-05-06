@@ -5,7 +5,7 @@ UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
 PRINT_TEMPLATES_DIR = os.path.join(BASE_DIR, "print_templates")
 USER_DATA_DIR = os.path.join(BASE_DIR, "user_data")
 
-MODELS = {
+PRESET_MODELS = {
     "cainiao_es": {
         "name": "CAINIAO ES (西班牙菜鸟)",
     },
@@ -19,6 +19,9 @@ MODELS = {
         "name": "BYD乘用车 Inbound&Outbound (乘用车信息汇总)",
     },
 }
+
+# Backward-compatible alias
+MODELS = PRESET_MODELS
 
 
 def get_user_dir(uid: str) -> str:
