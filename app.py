@@ -6,6 +6,12 @@ Performance architecture:
   - After processing: SQLite DB → GCS (cached DB)
   - Cold start: GCS (cached DB) → local SQLite (seconds, no re-parsing)
   - In-memory set tracks which users' DBs are already loaded locally
+
+Local mode (LOCAL_MODE=1):
+  - Skips Firebase Auth, GCS, and Firestore
+  - Uses a fixed UID "local_user" for all requests
+  - All data stays on the local filesystem
+  - No cloud dependencies required
 """
 
 import os
@@ -19,24 +25,28 @@ import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, jsonify, request, render_template, send_from_directory
 from werkzeug.utils import secure_filename
 
-import firebase_admin
-from firebase_admin import auth as fb_auth, firestore as fb_firestore
+LOCAL_MODE = os.environ.get("LOCAL_MODE", "").lower() in ("1", "true")
+
+if not LOCAL_MODE:
+    import firebase_admin
+    from firebase_admin import auth as fb_auth, firestore as fb_firestore
+    from gcs_helper import (
+        upload_excel as gcs_upload,
+        download_excel as gcs_download,
+        download_db as gcs_download_db,
+        upload_db as gcs_upload_db,
+        list_user_models,
+        delete_model_files as gcs_delete_model,
+        get_model_file_info as gcs_file_info,
+    )
+    firebase_admin.initialize_app()
 
 from config import MODELS, UPLOAD_DIR, get_user_db_path, get_user_upload_dir
 from data_loader import load_excel_to_db, get_model_sheets, get_all_loaded_models
 from search_engine import search
-from gcs_helper import (
-    upload_excel as gcs_upload,
-    download_excel as gcs_download,
-    download_db as gcs_download_db,
-    upload_db as gcs_upload_db,
-    list_user_models,
-    delete_model_files as gcs_delete_model,
-    get_model_file_info as gcs_file_info,
-)
 from template_engine import (
     list_templates,
     get_template,
@@ -46,12 +56,13 @@ from template_engine import (
     render_template_raw,
 )
 
-firebase_admin.initialize_app()
-
-app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
+app = Flask(__name__, static_folder="public", static_url_path="/static")
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024 if LOCAL_MODE else 200 * 1024 * 1024
 
 ALLOWED_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
+LOCAL_UID = "local_user"
+
+_local_jobs: dict[str, dict] = {}
 
 # In-memory cache: set of UIDs whose SQLite DB is already present locally
 _db_ready: set[str] = set()
@@ -75,6 +86,8 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 def _get_uid() -> str | None:
+    if LOCAL_MODE:
+        return LOCAL_UID
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         return None
@@ -100,12 +113,6 @@ def require_auth(fn):
 # ── DB recovery from GCS (fast path) ───────────────────────────────────
 
 def _ensure_user_db(uid: str):
-    """Make sure the user's SQLite DB is available locally.
-
-    Fast path: if already loaded this instance lifetime → skip.
-    Otherwise: download the pre-built DB from GCS (seconds).
-    Fallback: if no cached DB in GCS, the user hasn't uploaded anything yet.
-    """
     with _db_lock:
         if uid in _db_ready:
             return
@@ -116,26 +123,28 @@ def _ensure_user_db(uid: str):
             _db_ready.add(uid)
         return
 
-    t0 = time.time()
-    ok = gcs_download_db(uid, db_path)
-    elapsed = time.time() - t0
-    if ok:
-        _log(f"DB restored from GCS for user {uid[:8]}... in {elapsed:.1f}s")
+    if not LOCAL_MODE:
+        t0 = time.time()
+        ok = gcs_download_db(uid, db_path)
+        elapsed = time.time() - t0
+        if ok:
+            _log(f"DB restored from GCS for user {uid[:8]}... in {elapsed:.1f}s")
     with _db_lock:
         _db_ready.add(uid)
 
 
 # ── Background processing ───────────────────────────────────────────────
 
-def _get_fs_client():
-    return fb_firestore.client()
-
-
 def _update_job(uid: str, job_id: str, data: dict):
+    data["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    if LOCAL_MODE:
+        if job_id not in _local_jobs:
+            _local_jobs[job_id] = {}
+        _local_jobs[job_id].update(data)
+        return
     try:
-        db = _get_fs_client()
+        db = fb_firestore.client()
         ref = db.collection("users").document(uid).collection("jobs").document(job_id)
-        data["updatedAt"] = datetime.now(timezone.utc).isoformat()
         ref.set(data, merge=True)
     except Exception as e:
         _log(f"Firestore update FAILED for job {job_id}: {e}")
@@ -173,8 +182,8 @@ def _process_upload(uid: str, model_id: str, excel_path: str, job_id: str, mode:
         )
         gc.collect()
 
-        # Cache the built DB to GCS for fast cold-start recovery
-        gcs_upload_db(uid, db_path)
+        if not LOCAL_MODE:
+            gcs_upload_db(uid, db_path)
 
         with _db_lock:
             _db_ready.add(uid)
@@ -205,7 +214,24 @@ def _process_upload(uid: str, model_id: str, excel_path: str, job_id: str, mode:
 
 @app.route("/")
 def index():
+    if LOCAL_MODE:
+        return send_from_directory("public", "index.html")
     return render_template("index.html")
+
+
+@app.route("/api/config")
+def api_config():
+    return jsonify({"localMode": LOCAL_MODE})
+
+
+@app.route("/api/jobs/<job_id>")
+@require_auth
+def api_job_status(job_id, uid):
+    """Poll job status (local mode only; cloud uses Firestore realtime)."""
+    job = _local_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify(job)
 
 
 # ── Model / Data API ────────────────────────────────────────────────────
@@ -217,13 +243,12 @@ def api_models(uid):
     db_path = get_user_db_path(uid)
     loaded_local = set(get_all_loaded_models(db_path))
 
-    if not loaded_local:
+    gcs_models = set()
+    if not LOCAL_MODE and not loaded_local:
         try:
             gcs_models = set(list_user_models(uid))
         except Exception:
-            gcs_models = set()
-    else:
-        gcs_models = set()
+            pass
 
     result = []
     for mid, info in MODELS.items():
@@ -255,10 +280,11 @@ def api_upload_model(model_id, uid):
     if mode not in ("replace", "append"):
         mode = "replace"
 
-    try:
-        gcs_upload(uid, model_id, excel_path)
-    except Exception as e:
-        _log(f"GCS upload failed: {e}")
+    if not LOCAL_MODE:
+        try:
+            gcs_upload(uid, model_id, excel_path)
+        except Exception as e:
+            _log(f"GCS upload failed: {e}")
 
     job_id = uuid.uuid4().hex[:16]
     _update_job(uid, job_id, {
@@ -287,6 +313,15 @@ def api_sheets(model_id, uid):
 @require_auth
 def api_model_info(model_id, uid):
     """Get file info (size, last updated) for a model's stored Excel."""
+    if LOCAL_MODE:
+        upload_dir = get_user_upload_dir(uid)
+        for f in os.listdir(upload_dir) if os.path.isdir(upload_dir) else []:
+            if f.endswith(".xlsx"):
+                fp = os.path.join(upload_dir, f)
+                stat = os.stat(fp)
+                return jsonify({"exists": True, "size": stat.st_size,
+                                "updated": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()})
+        return jsonify({"exists": False})
     info = None
     try:
         info = gcs_file_info(uid, model_id)
@@ -318,28 +353,24 @@ def api_delete_model_data(model_id, uid):
         except Exception as e:
             _log(f"SQLite cleanup error: {e}")
 
-    # Re-upload cleaned DB to GCS
-    if os.path.isfile(db_path):
+    if not LOCAL_MODE:
+        if os.path.isfile(db_path):
+            try:
+                gcs_upload_db(uid, db_path)
+            except Exception as e:
+                _log(f"GCS DB re-upload failed: {e}")
         try:
-            gcs_upload_db(uid, db_path)
+            gcs_delete_model(uid, model_id)
         except Exception as e:
-            _log(f"GCS DB re-upload failed: {e}")
-
-    # Delete the Excel from GCS
-    try:
-        gcs_delete_model(uid, model_id)
-    except Exception as e:
-        _log(f"GCS delete failed: {e}")
-
-    # Delete upload history from Firestore
-    try:
-        db = _get_fs_client()
-        uploads_ref = db.collection("users").document(uid).collection("uploads")
-        docs = uploads_ref.where("model", "==", model_id).stream()
-        for doc in docs:
-            doc.reference.delete()
-    except Exception as e:
-        _log(f"Firestore cleanup error: {e}")
+            _log(f"GCS delete failed: {e}")
+        try:
+            db = fb_firestore.client()
+            uploads_ref = db.collection("users").document(uid).collection("uploads")
+            docs = uploads_ref.where("model", "==", model_id).stream()
+            for doc in docs:
+                doc.reference.delete()
+        except Exception as e:
+            _log(f"Firestore cleanup error: {e}")
 
     return jsonify({"ok": True, "message": f"Model {model_id} data deleted"})
 
@@ -448,4 +479,10 @@ def api_render(uid):
 
 
 if __name__ == "__main__":
+    if LOCAL_MODE:
+        _log("=" * 50)
+        _log("RUNNING IN LOCAL MODE")
+        _log("No Firebase Auth / GCS / Firestore required")
+        _log("Open http://localhost:5000 in your browser")
+        _log("=" * 50)
     app.run(debug=True, port=5000)

@@ -544,8 +544,23 @@
         jobError:'', uploadPhase:'upload',
         _jobUnsub:null,
 
+        _localMode: false,
+
         async init() {
           document.title = this.t('title');
+          try {
+            const cfg = await (await fetch('/api/config')).json();
+            if (cfg.localMode) {
+              this._localMode = true;
+              this.user = { uid:'local_user', email:'local@localhost', displayName:'Local User',
+                            getIdToken: async()=>'local_token' };
+              this.idToken = 'local_token';
+              this.authReady = true;
+              await this.fetchModels();
+              await this.fetchTemplates();
+              return;
+            }
+          } catch(e) {}
           fbAuth.onAuthStateChanged(async (u) => {
             this.user = u; this.authReady = true;
             if (u) {
@@ -558,18 +573,18 @@
         },
 
         authHeaders() { return {'Authorization':'Bearer '+(this.idToken||'')}; },
-        async refreshToken() { if (this.user) this.idToken = await this.user.getIdToken(true); },
+        async refreshToken() { if (this._localMode) return; if (this.user) this.idToken = await this.user.getIdToken(true); },
         async apiFetch(url, opts={}) {
-          await this.refreshToken();
+          if (!this._localMode) await this.refreshToken();
           opts.headers = {...opts.headers, ...this.authHeaders()};
-          const resp = await fetch(API_BASE+url, opts);
-          if (resp.status===401) { await this.refreshToken(); opts.headers={...opts.headers,...this.authHeaders()}; return fetch(API_BASE+url,opts); }
+          const resp = await fetch((this._localMode?'':API_BASE)+url, opts);
+          if (!this._localMode && resp.status===401) { await this.refreshToken(); opts.headers={...opts.headers,...this.authHeaders()}; return fetch(API_BASE+url,opts); }
           return resp;
         },
         async safeJson(resp) { const text=await resp.text(); try{return JSON.parse(text);}catch{return {error:text||`HTTP ${resp.status}`};} },
 
-        async googleLogin() { try { await fbAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider()); } catch(e) { console.error('Login:',e); } },
-        async logout() { await fbAuth.signOut(); this.uploadHistory=[]; this.models=[]; this.sheets=[]; this.selectedModel=null; this.selectedSheet=null; this.searchResult=null; },
+        async googleLogin() { if (this._localMode) return; try { await fbAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider()); } catch(e) { console.error('Login:',e); } },
+        async logout() { if (this._localMode) return; await fbAuth.signOut(); this.uploadHistory=[]; this.models=[]; this.sheets=[]; this.selectedModel=null; this.selectedSheet=null; this.searchResult=null; },
 
         handleDrop(e) {
           const f = e.dataTransfer.files;
@@ -635,10 +650,34 @@
 
         _watchJob(jobId) {
           if (this._jobUnsub) this._jobUnsub();
+
+          if (this._localMode) {
+            this._pollJobLocal(jobId);
+            return;
+          }
+
           const ref = fbDb.collection('users').doc(this.user.uid).collection('jobs').doc(jobId);
           this._jobUnsub = ref.onSnapshot((snap) => {
             if (!snap.exists) return;
             const d = snap.data();
+            this._handleJobUpdate(d, jobId);
+          });
+        },
+
+        async _pollJobLocal(jobId) {
+          const poll = async () => {
+            try {
+              const d = await this.safeJson(await this.apiFetch(`/api/jobs/${jobId}`));
+              if (d.error && !d.status) return;
+              this._handleJobUpdate(d, jobId);
+              if (d.status === 'done' || d.status === 'error') return;
+            } catch(e) {}
+            setTimeout(poll, 1500);
+          };
+          poll();
+        },
+
+        _handleJobUpdate(d, jobId) {
             this.jobStatus = d.status;
 
             if (d.status === 'processing') {

@@ -15,6 +15,9 @@ MODELS = {
     "overview": {
         "name": "Inbound/Outbound Overview (综合总览)",
     },
+    "byd_car": {
+        "name": "BYD乘用车 Inbound&Outbound (乘用车信息汇总)",
+    },
 }
 
 
