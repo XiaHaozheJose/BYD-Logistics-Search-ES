@@ -8,6 +8,7 @@
   <script src="https://www.gstatic.com/firebasejs/11.7.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/11.7.1/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/11.7.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.7.1/firebase-storage-compat.js"></script>
   <script>
     firebase.initializeApp({
       apiKey: "AIzaSyD-fmiozwMEn0WbBFsO0dfAhCI0OcZxU8o",
@@ -19,6 +20,7 @@
     });
     const fbAuth = firebase.auth();
     const fbDb = firebase.firestore();
+    const fbStorage = firebase.storage();
   </script>
   <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
   <style>
@@ -605,6 +607,62 @@
           this.jobError = '';
           this._uploadMode = mode;
 
+          if (this._localMode) {
+            this._uploadViaXHR(mode);
+          } else {
+            this._uploadViaStorage(mode);
+          }
+        },
+
+        _uploadViaStorage(mode) {
+          const self = this;
+          const uid = this.user.uid;
+          const modelId = this.selectedModel;
+          const storagePath = `uploads/${uid}/${modelId}/latest.xlsx`;
+          const ref = fbStorage.ref(storagePath);
+          const task = ref.put(this.uploadFile);
+
+          task.on('state_changed',
+            (snap) => {
+              const pct = Math.round((snap.bytesTransferred / snap.totalBytes) * 30);
+              self.jobPercent = pct;
+              const mb = (snap.bytesTransferred / (1024*1024)).toFixed(1);
+              const totalMb = (snap.totalBytes / (1024*1024)).toFixed(1);
+              self.jobProgressText = `${self.t('phaseUpload')} ${mb}/${totalMb} MB (${pct}%)`;
+            },
+            (err) => {
+              self.uploading = false;
+              self.jobStatus = 'error';
+              self.jobError = err.message || self.t('uploadFailed');
+            },
+            async () => {
+              self.jobPercent = 30;
+              self.uploadPhase = 'process';
+              self.jobProgressText = self.t('phaseProcess') + '...';
+              try {
+                const resp = await self.apiFetch(`/api/models/${modelId}/process`, {
+                  method: 'POST',
+                  headers: {'Content-Type': 'application/json'},
+                  body: JSON.stringify({ storagePath, mode })
+                });
+                self.uploading = false;
+                const data = await self.safeJson(resp);
+                if (data.ok && data.jobId) {
+                  self._watchJob(data.jobId);
+                } else {
+                  self.jobStatus = 'error';
+                  self.jobError = data.error || self.t('uploadFailed');
+                }
+              } catch(e) {
+                self.uploading = false;
+                self.jobStatus = 'error';
+                self.jobError = e.message || self.t('uploadFailed');
+              }
+            }
+          );
+        },
+
+        _uploadViaXHR(mode) {
           const self = this;
           const xhr = new XMLHttpRequest();
           const fd = new FormData();
@@ -626,7 +684,6 @@
             self.uploading = false;
             let data;
             try { data = JSON.parse(xhr.responseText); } catch { data = {error:xhr.responseText||`HTTP ${xhr.status}`}; }
-
             if (xhr.status>=200 && xhr.status<300 && data.ok && data.jobId) {
               self._watchJob(data.jobId);
             } else {
@@ -640,10 +697,11 @@
             self.jobError = self.t('uploadFailed');
           };
 
+          const base = this._localMode ? '' : API_BASE;
           self.refreshToken().then(() => {
-            xhr.open('POST', API_BASE+`/api/models/${self.selectedModel}/upload`);
+            xhr.open('POST', base+`/api/models/${self.selectedModel}/upload`);
             xhr.setRequestHeader('Authorization','Bearer '+(self.idToken||''));
-            xhr.timeout = 120000;
+            xhr.timeout = 0;
             xhr.send(fd);
           });
         },

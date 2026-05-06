@@ -41,6 +41,7 @@ if not LOCAL_MODE:
         list_user_models,
         delete_model_files as gcs_delete_model,
         get_model_file_info as gcs_file_info,
+        download_from_firebase_storage,
     )
     firebase_admin.initialize_app()
 
@@ -291,6 +292,49 @@ def api_upload_model(model_id, uid):
         "status": "queued",
         "modelId": model_id,
         "fileName": fname,
+        "currentSheet": 0,
+        "totalSheets": 0,
+        "rowsProcessed": 0,
+    })
+
+    _executor.submit(_process_upload, uid, model_id, excel_path, job_id, mode)
+    return jsonify({"ok": True, "jobId": job_id})
+
+
+@app.route("/api/models/<model_id>/process", methods=["POST", "OPTIONS"])
+@require_auth
+def api_process_model(model_id, uid):
+    """Process an Excel file that was uploaded directly to Firebase Storage."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    if model_id not in MODELS:
+        return jsonify({"error": "Unknown model"}), 404
+
+    data = request.get_json(force=True)
+    storage_path = data.get("storagePath", "")
+    mode = data.get("mode", "replace")
+    if mode not in ("replace", "append"):
+        mode = "replace"
+
+    if not storage_path or not storage_path.startswith(f"uploads/{uid}/"):
+        return jsonify({"error": "Invalid storage path"}), 400
+
+    upload_dir = get_user_upload_dir(uid)
+    excel_path = os.path.join(upload_dir, "latest.xlsx")
+
+    try:
+        ok = download_from_firebase_storage(storage_path, excel_path)
+        if not ok:
+            return jsonify({"error": "File not found in Storage"}), 404
+    except Exception as e:
+        _log(f"Firebase Storage download failed: {e}")
+        return jsonify({"error": "Failed to download file from Storage"}), 500
+
+    job_id = uuid.uuid4().hex[:16]
+    _update_job(uid, job_id, {
+        "status": "queued",
+        "modelId": model_id,
+        "fileName": storage_path.split("/")[-1],
         "currentSheet": 0,
         "totalSheets": 0,
         "rowsProcessed": 0,

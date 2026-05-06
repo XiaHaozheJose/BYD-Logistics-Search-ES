@@ -11,6 +11,10 @@ import sys
 from google.cloud import storage
 
 BUCKET_NAME = os.environ.get("GCS_BUCKET", "byd-search-user-data")
+FIREBASE_STORAGE_BUCKET = os.environ.get(
+    "FIREBASE_STORAGE_BUCKET",
+    "project-d5a525d1-72ba-431c-80c.firebasestorage.app",
+)
 
 _client = None
 
@@ -99,6 +103,20 @@ def get_model_file_info(uid: str, model_id: str) -> dict | None:
         "size_mb": round((blob.size or 0) / (1024 * 1024), 2),
         "updated": blob.updated.isoformat() if blob.updated else None,
     }
+
+
+def download_from_firebase_storage(storage_path: str, local_path: str) -> bool:
+    """Download a file from the Firebase Storage bucket (used for direct uploads)."""
+    bucket = _get_client().bucket(FIREBASE_STORAGE_BUCKET)
+    blob = bucket.blob(storage_path)
+    if not blob.exists():
+        _log(f"Firebase Storage blob not found: {storage_path}")
+        return False
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    blob.download_to_filename(local_path)
+    size_mb = os.path.getsize(local_path) / (1024 * 1024)
+    _log(f"Downloaded from Firebase Storage: {storage_path} ({size_mb:.1f} MB)")
+    return True
 
 
 def list_user_models(uid: str) -> list[str]:
