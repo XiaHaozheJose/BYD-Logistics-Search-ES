@@ -9,6 +9,7 @@ Rendering uses Python's str-based replacement (not Jinja2) so that
 double-brace syntax in user templates is kept simple and predictable.
 """
 
+import html
 import json
 import os
 import re
@@ -86,7 +87,7 @@ def render_template(tpl_id: str, rows: list[dict]) -> str:
         for match in _PLACEHOLDER_RE.finditer(body):
             col_name = match.group(1).strip()
             value = row.get(col_name, "")
-            text = text.replace(match.group(0), str(value) if value else "")
+            text = text.replace(match.group(0), html.escape(str(value)) if value else "")
         rendered_parts.append(text)
 
     return "\n<hr class='my-4 border-gray-300'>\n".join(rendered_parts)
@@ -100,22 +101,19 @@ def render_template_raw(body: str, rows: list[dict]) -> str:
         for match in _PLACEHOLDER_RE.finditer(body):
             col_name = match.group(1).strip()
             value = row.get(col_name, "")
-            text = text.replace(match.group(0), str(value) if value else "")
+            text = text.replace(match.group(0), html.escape(str(value)) if value else "")
         rendered_parts.append(text)
     return "\n<hr class='my-4 border-gray-300'>\n".join(rendered_parts)
 
 
-# Seed a default template if none exist
 if not list_templates():
     save_template(
         name="默认模板",
         body=(
-            "<h3>订单查询结果</h3>\n"
-            "<table class='table-auto border-collapse border border-gray-400 w-full'>\n"
-            "  <tbody>\n"
-            "    {{#each}}\n"
-            "  </tbody>\n"
-            "</table>"
+            '<div style="border:1px solid #ccc;padding:12px;margin:8px 0;border-radius:6px">'
+            '<h3 style="color:#1e40af;border-bottom:2px solid #3b82f6;padding-bottom:4px">'
+            '订单信息</h3>'
+            '</div>'
         ),
         tpl_id="default",
     )

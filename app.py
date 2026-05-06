@@ -17,6 +17,7 @@ import sqlite3
 import functools
 import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from flask import Flask, jsonify, request, render_template
 from werkzeug.utils import secure_filename
@@ -50,9 +51,12 @@ firebase_admin.initialize_app()
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024
 
+ALLOWED_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
+
 # In-memory cache: set of UIDs whose SQLite DB is already present locally
 _db_ready: set[str] = set()
 _db_lock = threading.Lock()
+_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="upload")
 
 
 def _log(msg):
@@ -61,7 +65,7 @@ def _log(msg):
 
 @app.after_request
 def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGINS
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     return response
@@ -248,6 +252,8 @@ def api_upload_model(model_id, uid):
     excel_path = os.path.join(upload_dir, fname)
     uploaded.save(excel_path)
     mode = request.form.get("mode", "replace")
+    if mode not in ("replace", "append"):
+        mode = "replace"
 
     try:
         gcs_upload(uid, model_id, excel_path)
@@ -264,12 +270,7 @@ def api_upload_model(model_id, uid):
         "rowsProcessed": 0,
     })
 
-    thread = threading.Thread(
-        target=_process_upload,
-        args=(uid, model_id, excel_path, job_id, mode),
-        daemon=True,
-    )
-    thread.start()
+    _executor.submit(_process_upload, uid, model_id, excel_path, job_id, mode)
     return jsonify({"ok": True, "jobId": job_id})
 
 
@@ -345,24 +346,50 @@ def api_delete_model_data(model_id, uid):
 
 # ── Search API ───────────────────────────────────────────────────────────
 
+def _is_valid_table(uid: str, table: str) -> bool:
+    """Check that the table exists in the user's loaded model metadata."""
+    db_path = get_user_db_path(uid)
+    if not os.path.isfile(db_path):
+        return False
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.execute(
+            "SELECT 1 FROM model_meta WHERE table_name = ? LIMIT 1", (table,)
+        )
+        found = cur.fetchone() is not None
+        conn.close()
+        return found
+    except Exception:
+        return False
+
+
 @app.route("/api/search")
 @require_auth
 def api_search(uid):
     table = request.args.get("table", "")
     query = request.args.get("q", "")
-    limit = int(request.args.get("limit", 200))
-    offset = int(request.args.get("offset", 0))
+
+    try:
+        limit = min(int(request.args.get("limit", 200)), 1000)
+        offset = max(int(request.args.get("offset", 0)), 0)
+    except (ValueError, TypeError):
+        limit, offset = 200, 0
 
     if not table or not query:
         return jsonify({"columns": [], "rows": [], "total": 0})
 
     _ensure_user_db(uid)
+
+    if not _is_valid_table(uid, table):
+        return jsonify({"error": "Invalid table"}), 400
+
     db_path = get_user_db_path(uid)
 
     try:
         result = search(table, query, db_path, limit=limit, offset=offset)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        _log(f"Search error: {e}")
+        return jsonify({"error": "Search failed"}), 500
 
     return jsonify(result)
 
@@ -370,37 +397,43 @@ def api_search(uid):
 # ── Template API ─────────────────────────────────────────────────────────
 
 @app.route("/api/templates")
-def api_list_templates():
+@require_auth
+def api_list_templates(uid):
     return jsonify(list_templates())
 
 @app.route("/api/templates/<tpl_id>")
-def api_get_template(tpl_id):
+@require_auth
+def api_get_template(tpl_id, uid):
     tpl = get_template(tpl_id)
     if not tpl:
         return jsonify({"error": "Template not found"}), 404
     return jsonify(tpl)
 
 @app.route("/api/templates", methods=["POST"])
-def api_save_template():
+@require_auth
+def api_save_template(uid):
     data = request.get_json(force=True)
     tpl = save_template(name=data.get("name", "Untitled"), body=data.get("body", ""), tpl_id=data.get("id"))
     return jsonify(tpl)
 
 @app.route("/api/templates/<tpl_id>", methods=["PUT"])
-def api_update_template(tpl_id):
+@require_auth
+def api_update_template(tpl_id, uid):
     data = request.get_json(force=True)
     tpl = save_template(name=data.get("name", "Untitled"), body=data.get("body", ""), tpl_id=tpl_id)
     return jsonify(tpl)
 
 @app.route("/api/templates/<tpl_id>", methods=["DELETE"])
-def api_delete_template(tpl_id):
+@require_auth
+def api_delete_template(tpl_id, uid):
     return jsonify({"ok": delete_template(tpl_id)})
 
 
 # ── Render API ───────────────────────────────────────────────────────────
 
 @app.route("/api/render", methods=["POST"])
-def api_render():
+@require_auth
+def api_render(uid):
     data = request.get_json(force=True)
     rows = data.get("rows", [])
     body = data.get("body")

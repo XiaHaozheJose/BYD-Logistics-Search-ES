@@ -73,18 +73,17 @@ def download_db(uid: str, local_db_path: str) -> bool:
 
 
 def delete_model_files(uid: str, model_id: str):
-    """Delete both the Excel file and cached DB for a model from GCS."""
+    """Delete the Excel file for a model from GCS.
+
+    Note: The SQLite DB blob is shared across all models and is NOT deleted here.
+    It is re-uploaded after local cleanup by the caller.
+    """
     bucket = _get_client().bucket(BUCKET_NAME)
-    paths = [
-        f"{uid}/{model_id}/latest.xlsx",
-        f"{uid}/db/byd_search.db",
-    ]
-    for p in paths:
-        blob = bucket.blob(p)
-        if blob.exists():
-            if p.endswith("latest.xlsx"):
-                blob.delete()
-                _log(f"Deleted: {p}")
+    blob_path = f"{uid}/{model_id}/latest.xlsx"
+    blob = bucket.blob(blob_path)
+    if blob.exists():
+        blob.delete()
+        _log(f"Deleted: {blob_path}")
 
 
 def get_model_file_info(uid: str, model_id: str) -> dict | None:

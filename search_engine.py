@@ -2,7 +2,10 @@
 Full-text search engine backed by SQLite FTS5.
 """
 
+import re
 import sqlite3
+
+_SAFE_TABLE_RE = re.compile(r'^[a-zA-Z0-9_\u4e00-\u9fff]+$')
 
 
 def search(
@@ -12,6 +15,10 @@ def search(
     limit: int = 200,
     offset: int = 0,
 ) -> dict:
+    if not _SAFE_TABLE_RE.match(table_name):
+        raise ValueError(f"Invalid table name: {table_name}")
+    limit = min(max(limit, 1), 1000)
+    offset = max(offset, 0)
     fts_table = f"{table_name}__fts"
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row

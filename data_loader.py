@@ -20,7 +20,8 @@ import xml.etree.ElementTree as ET
 
 import openpyxl
 
-BATCH_SIZE = 1000
+BATCH_SIZE = 2000
+FTS_CHUNK_SIZE = 5000
 
 
 def _log(msg):
@@ -44,7 +45,10 @@ def _cell_to_str(val) -> str:
         return val.strftime("%Y-%m-%d")
     if isinstance(val, datetime.time):
         return val.strftime("%H:%M:%S")
-    return str(val).strip()
+    try:
+        return str(val).strip()
+    except Exception:
+        return ""
 
 
 def _safe_col_name(name, idx: int) -> str:
@@ -156,6 +160,8 @@ def load_excel_to_db(
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
 
+    failed_sheets: list[str] = []
+
     try:
         if mode == "replace":
             _drop_model_tables(conn, model_id)
@@ -166,124 +172,160 @@ def load_excel_to_db(
             if on_progress:
                 on_progress(sheet_idx, total_sheets, sheet_name, 0)
 
-            _log(f"Sheet {sheet_idx}/{total_sheets}: '{sheet_name}' — opening workbook")
-
-            wb = openpyxl.load_workbook(
-                excel_path, read_only=True, data_only=True,
-            )
-            ws = wb[sheet_name]
-
-            header_row = None
-            for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
-                header_row = row
-                break
-            if not header_row:
-                wb.close()
-                del ws, wb
+            try:
+                _process_sheet(
+                    conn, model_id, excel_path, sheet_name,
+                    sheet_idx, total_sheets, merge_map, on_progress,
+                )
+            except Exception as exc:
+                _log(f"Sheet {sheet_idx}/{total_sheets}: '{sheet_name}' — FAILED: {exc}")
+                failed_sheets.append(sheet_name)
                 gc.collect()
-                if on_progress:
-                    on_progress(sheet_idx, total_sheets, sheet_name, 0)
-                continue
-
-            columns = [_safe_col_name(c, i) for i, c in enumerate(header_row)]
-            seen: dict[str, int] = {}
-            deduped: list[str] = []
-            for c in columns:
-                if c in seen:
-                    seen[c] += 1
-                    deduped.append(f"{c}_{seen[c]}")
-                else:
-                    seen[c] = 0
-                    deduped.append(c)
-            columns = deduped
-            num_cols = len(columns)
-
-            table = f"{model_id}__{_slugify(sheet_name)}"
-            fts_table = f"{table}__fts"
-
-            col_defs = ", ".join(f'"{c}" TEXT' for c in columns)
-            conn.execute(
-                f'CREATE TABLE IF NOT EXISTS "{table}" '
-                f"(_rowid INTEGER PRIMARY KEY AUTOINCREMENT, {col_defs})"
-            )
-
-            placeholders = ", ".join(["?"] * num_cols)
-            col_names = ", ".join(f'"{c}"' for c in columns)
-            insert_sql = f'INSERT INTO "{table}" ({col_names}) VALUES ({placeholders})'
-
-            merges = merge_map.get(sheet_idx, [])
-            source_cells, fill_cells = _build_merge_lookup(merges) if merges else ({}, {})
-
-            batch: list[tuple] = []
-            rows_processed = 0
-
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                excel_row = rows_processed + 2
-                row_list = list(row)
-
-                while len(row_list) < num_cols:
-                    row_list.append(None)
-
-                if source_cells or fill_cells:
-                    for col_idx in range(num_cols):
-                        cell_key = (excel_row, col_idx)
-                        if cell_key in source_cells:
-                            source_cells[cell_key] = row_list[col_idx]
-                        elif row_list[col_idx] is None and cell_key in fill_cells:
-                            src_key = fill_cells[cell_key]
-                            src_val = source_cells.get(src_key)
-                            if src_val is not None:
-                                row_list[col_idx] = src_val
-
-                vals = tuple(_cell_to_str(row_list[i]) for i in range(num_cols))
-                if all(v == "" for v in vals):
-                    rows_processed += 1
-                    continue
-
-                batch.append(vals)
-                rows_processed += 1
-
-                if len(batch) >= BATCH_SIZE:
-                    conn.executemany(insert_sql, batch)
-                    conn.commit()
-                    batch.clear()
-                    if on_progress:
-                        on_progress(sheet_idx, total_sheets, sheet_name, rows_processed)
-
-            if batch:
-                conn.executemany(insert_sql, batch)
-                conn.commit()
-                batch.clear()
-
-            _log(f"Sheet {sheet_idx}/{total_sheets}: '{sheet_name}' — {rows_processed} rows, building FTS")
-
-            conn.execute(f'DROP TABLE IF EXISTS "{fts_table}"')
-            conn.execute(
-                f'CREATE VIRTUAL TABLE "{fts_table}" USING fts5('
-                f"_all_text, content=\"{table}\", content_rowid=_rowid, "
-                f"tokenize=\"unicode61 remove_diacritics 2\")"
-            )
-            conn.execute(
-                f'INSERT INTO "{fts_table}" (rowid, _all_text) '
-                f"SELECT _rowid, {_concat_expr(columns)} FROM \"{table}\""
-            )
-            conn.commit()
-
-            source_cells.clear()
-            fill_cells.clear()
-
-            wb.close()
-            del ws, wb
-            gc.collect()
-
-            if on_progress:
-                on_progress(sheet_idx, total_sheets, sheet_name, rows_processed)
-
-            _log(f"Sheet {sheet_idx}/{total_sheets}: '{sheet_name}' — done, memory released")
 
         _save_model_meta(conn, model_id, excel_path, sheet_names)
     finally:
         conn.close()
+
+    if failed_sheets:
+        _log(f"Finished with {len(failed_sheets)} failed sheet(s): {failed_sheets}")
+
+
+def _process_sheet(
+    conn: sqlite3.Connection,
+    model_id: str,
+    excel_path: str,
+    sheet_name: str,
+    sheet_idx: int,
+    total_sheets: int,
+    merge_map: dict,
+    on_progress,
+):
+    _log(f"Sheet {sheet_idx}/{total_sheets}: '{sheet_name}' — opening workbook")
+
+    wb = openpyxl.load_workbook(
+        excel_path, read_only=True, data_only=True,
+    )
+    try:
+        ws = wb[sheet_name]
+
+        header_row = None
+        for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
+            header_row = row
+            break
+        if not header_row:
+            if on_progress:
+                on_progress(sheet_idx, total_sheets, sheet_name, 0)
+            return
+
+        columns = [_safe_col_name(c, i) for i, c in enumerate(header_row)]
+        seen: dict[str, int] = {}
+        deduped: list[str] = []
+        for c in columns:
+            if c in seen:
+                seen[c] += 1
+                deduped.append(f"{c}_{seen[c]}")
+            else:
+                seen[c] = 0
+                deduped.append(c)
+        columns = deduped
+        num_cols = len(columns)
+
+        table = f"{model_id}__{_slugify(sheet_name)}"
+        fts_table = f"{table}__fts"
+
+        col_defs = ", ".join(f'"{c}" TEXT' for c in columns)
+        conn.execute(
+            f'CREATE TABLE IF NOT EXISTS "{table}" '
+            f"(_rowid INTEGER PRIMARY KEY AUTOINCREMENT, {col_defs})"
+        )
+
+        placeholders = ", ".join(["?"] * num_cols)
+        col_names = ", ".join(f'"{c}"' for c in columns)
+        insert_sql = f'INSERT INTO "{table}" ({col_names}) VALUES ({placeholders})'
+
+        merges = merge_map.get(sheet_idx, [])
+        source_cells, fill_cells = _build_merge_lookup(merges) if merges else ({}, {})
+
+        batch: list[tuple] = []
+        rows_processed = 0
+
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            excel_row = rows_processed + 2
+            row_list = list(row)
+
+            while len(row_list) < num_cols:
+                row_list.append(None)
+
+            if source_cells or fill_cells:
+                for col_idx in range(num_cols):
+                    cell_key = (excel_row, col_idx)
+                    if cell_key in source_cells:
+                        source_cells[cell_key] = row_list[col_idx]
+                    elif row_list[col_idx] is None and cell_key in fill_cells:
+                        src_key = fill_cells[cell_key]
+                        src_val = source_cells.get(src_key)
+                        if src_val is not None:
+                            row_list[col_idx] = src_val
+
+            vals = tuple(_cell_to_str(row_list[i]) for i in range(num_cols))
+            if all(v == "" for v in vals):
+                rows_processed += 1
+                continue
+
+            batch.append(vals)
+            rows_processed += 1
+
+            if len(batch) >= BATCH_SIZE:
+                conn.executemany(insert_sql, batch)
+                conn.commit()
+                batch.clear()
+                if on_progress:
+                    on_progress(sheet_idx, total_sheets, sheet_name, rows_processed)
+
+        if batch:
+            conn.executemany(insert_sql, batch)
+            conn.commit()
+            batch.clear()
+
+        source_cells.clear()
+        fill_cells.clear()
+    finally:
+        wb.close()
+        del wb
+        gc.collect()
+
+    _log(f"Sheet {sheet_idx}/{total_sheets}: '{sheet_name}' — {rows_processed} rows, building FTS")
+
+    conn.execute(f'DROP TABLE IF EXISTS "{fts_table}"')
+    conn.execute(
+        f'CREATE VIRTUAL TABLE "{fts_table}" USING fts5('
+        f"_all_text, content=\"{table}\", content_rowid=_rowid, "
+        f"tokenize=\"unicode61 remove_diacritics 2\")"
+    )
+
+    concat = _concat_expr(columns)
+    last_rowid = 0
+    while True:
+        rows = conn.execute(
+            f'SELECT _rowid, {concat} FROM "{table}" '
+            f"WHERE _rowid > ? ORDER BY _rowid LIMIT ?",
+            (last_rowid, FTS_CHUNK_SIZE),
+        ).fetchall()
+        if not rows:
+            break
+        conn.executemany(
+            f'INSERT INTO "{fts_table}" (rowid, _all_text) VALUES (?, ?)',
+            rows,
+        )
+        conn.commit()
+        last_rowid = rows[-1][0]
+        del rows
+    gc.collect()
+
+    if on_progress:
+        on_progress(sheet_idx, total_sheets, sheet_name, rows_processed)
+
+    _log(f"Sheet {sheet_idx}/{total_sheets}: '{sheet_name}' — done, memory released")
 
 
 def _concat_expr(columns: list[str]) -> str:
